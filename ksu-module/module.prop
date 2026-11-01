@@ -1,0 +1,6 @@
+id=tcp_bbr_kmod
+name=BBR TCP Congestion Control
+version=6.1.138-r00
+versionCode=1
+author=iliyian
+description=Loads tcp_bbr.ko (ACK android14-6.1.138, built with AOSP clang r487747c matching the device kernel) and sets net.ipv4.tcp_congestion_control=bbr.

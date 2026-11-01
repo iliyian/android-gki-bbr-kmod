@@ -1,0 +1,12 @@
+out/
+*.o
+*.mod
+*.mod.c
+*.symvers
+*.order
+*.btf
+*.btf.txt
+*.ll
+config.gz
+.venv/
+__pycache__/
