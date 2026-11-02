@@ -58,6 +58,7 @@ BENCH_DATA=./data python3 scripts/bench/analyze_qdisc.py myrun
 | `analyze.py` | 解析 `<tag>.*` 的公共库，也能跑 bulk/multi/ul 的通用汇总 |
 | `analyze_qdisc.py` | A/C 套件分析（本报告用的就是它） |
 | `export_runs_csv.py` | 把 2026-11-02 的原始结果导出成 `docs/bench/data/2026-11-02-runs.csv`；标签结构是那次测试专用的，换测试要改循环 |
+| `export_samples_csv.py` | 把原始 `ss`/`ping` 展开成逐采样 CSV：`2026-11-02-samples-ss.csv` 和 `2026-11-02-samples-ping.csv` |
 
 ## 注意事项
 

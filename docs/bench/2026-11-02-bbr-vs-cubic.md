@@ -143,6 +143,9 @@
 
 - 测试脚本：[`scripts/bench/`](../../scripts/bench/)
 - 逐轮脱敏数据：[`data/2026-11-02-runs.csv`](data/2026-11-02-runs.csv)
+- 逐采样数据：[`samples-ss.csv`](data/2026-11-02-samples-ss.csv) / [`samples-ping.csv`](data/2026-11-02-samples-ping.csv)
+  - `samples-ss.csv`：每 250 ms 一行；下载方向只填接收字节和间隔吞吐，发送端字段（cwnd/RTT/delivery）留空。
+  - `samples-ping.csv`：每次成功 echo 一行；`approx_elapsed_s` 按 `icmp_seq × 0.2 s` 估算。
   - `cwnd_segs` / `tcp_rtt_ms` / `delivery_mbps` 仅上传方向有效（客户端是发送端）；下载方向留空。
   - `retrans_pct` 仅上传方向有意义；下载方向的本地重传统计只反映 ACK，不代表服务端。
   - `used=no` 的轮次为信号/通话异常，已在统计中剔除。
