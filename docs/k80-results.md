@@ -122,3 +122,7 @@ net.core.default_qdisc = fq
 - 通用 GKI 6.1.145（SukiSU 4.1.3 + SUSFS + KPM）：能启动，但 HyperOS 3 显示栈闪屏（vendor HWC/DRM `COMMIT failed: 11`）。
 - zorn 专用 6.1.176 树：同样闪屏。
 - KPM 方案：LKM 模式下 `ksud kpm list` 返回 `EOPNOTSUPP`（需要编译期 `CONFIG_KPM`）。
+
+## 性能实测
+
+原厂 CUBIC+mq/pfifo_fast vs BBR+fq 的两组手机端 A/B 测试（下载/上传/压载延迟）见 [bench/2026-11-02-bbr-vs-cubic.md](bench/2026-11-02-bbr-vs-cubic.md)。

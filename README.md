@@ -128,6 +128,17 @@ net.core.default_qdisc          : fq
 wlan0 / rmnet_data* / rmnet_ipa0: qdisc fq
 ```
 
+## 性能实测（BBR vs CUBIC）
+
+2026-11-02 在浙江联通 5G（室内，某高校）做了两组手机端 A/B 对比（cubic+mq/pfifo_fast vs bbr+fq）：下载、上传、压载延迟。
+
+主要结论：
+
+- **下载**：手机端切 BBR / 改 qdisc 没有可归因影响（下载方向的拥塞控制在服务端）。
+- **上传**：BBR 的主要收益是降低排队延迟；在深缓冲蜂窝上行上，吞吐不一定优于 CUBIC，遇到丢包还会退让。
+
+完整方法、三台不同 RTT 服务器的结果与局限见 [docs/bench/2026-11-02-bbr-vs-cubic.md](docs/bench/2026-11-02-bbr-vs-cubic.md)，逐轮脱敏数据见 [CSV](docs/bench/data/2026-11-02-runs.csv)。
+
 ## 回退
 
 ```sh
