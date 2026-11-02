@@ -104,6 +104,17 @@ for p in range(1, 5):
                         "cubic" if arm == "A" else "bbr",
                         "mq/pfifo_fast" if arm == "A" else "fq", 8))
 
+for p in range(1, 7):
+    for arm in ("A", "C"):
+        rows.append(row("C", 70, "evening-peak", "download-single", f"bj4bulk{p}_{arm}", arm,
+                        "cubic" if arm == "A" else "bbr",
+                        "mq/pfifo_fast" if arm == "A" else "fq", 32))
+for p in range(1, 5):
+    for arm in ("A", "C"):
+        rows.append(row("C", 70, "evening-peak", "upload", f"bj4ul{p}_{arm}", arm,
+                        "cubic" if arm == "A" else "bbr",
+                        "mq/pfifo_fast" if arm == "A" else "fq", 8))
+
 outdir = os.path.dirname(OUT)
 if outdir:
     os.makedirs(outdir, exist_ok=True)
