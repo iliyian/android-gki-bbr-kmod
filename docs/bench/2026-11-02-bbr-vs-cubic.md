@@ -25,6 +25,7 @@
 
 ## 测试方法
 
+- 测速服务端：[iliyian/minimal-speedtest](https://github.com/iliyian/minimal-speedtest)。
 - 每轮新起 `curl` 进程，确保新 TCP 连接使用当轮设置的 CC。
 - **ABBA 交替**：同一块内 A/C 顺序轮换，块内配对比较，轮间冷却 3 秒。
 - 负载：
