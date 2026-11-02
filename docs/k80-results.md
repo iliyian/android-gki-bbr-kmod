@@ -125,4 +125,4 @@ net.core.default_qdisc = fq
 
 ## 性能实测
 
-原厂 CUBIC+mq/pfifo_fast vs BBR+fq 的两组手机端 A/B 测试（下载/上传/压载延迟）见 [bench/2026-11-02-bbr-vs-cubic.md](bench/2026-11-02-bbr-vs-cubic.md)。
+原厂 CUBIC+mq/pfifo_fast vs BBR+fq 的三台服务器手机端 A/B 测试（下载/上传/压载延迟）见 [bench/2026-11-02-bbr-vs-cubic.md](bench/2026-11-02-bbr-vs-cubic.md)。

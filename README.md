@@ -130,7 +130,7 @@ wlan0 / rmnet_data* / rmnet_ipa0: qdisc fq
 
 ## 性能实测（BBR vs CUBIC）
 
-2026-11-02 在浙江联通 5G（室内，某高校）做了两组手机端 A/B 对比（cubic+mq/pfifo_fast vs bbr+fq）：下载、上传、压载延迟。
+2026-11-02 在浙江联通 5G（室内，某高校）的三台不同线路服务器上做了手机端 A/B 对比（cubic+mq/pfifo_fast vs bbr+fq）：下载、上传、压载延迟。
 
 主要结论：
 
