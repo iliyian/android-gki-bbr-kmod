@@ -141,6 +141,7 @@
 
 ## 复现与数据
 
+- 测试脚本：[`scripts/bench/`](../../scripts/bench/)
 - 逐轮脱敏数据：[`data/2026-11-02-runs.csv`](data/2026-11-02-runs.csv)
   - `cwnd_segs` / `tcp_rtt_ms` / `delivery_mbps` 仅上传方向有效（客户端是发送端）；下载方向留空。
   - `retrans_pct` 仅上传方向有意义；下载方向的本地重传统计只反映 ACK，不代表服务端。
