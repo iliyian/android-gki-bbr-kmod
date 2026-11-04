@@ -422,7 +422,7 @@ BBR 主要改善的是满载时的排队延迟，峰值吞吐没有稳定提升�
 - 报告：[docs/bench/2026-11-02-bbr-vs-cubic.md](bench/2026-11-02-bbr-vs-cubic.md)
 - 逐轮 CSV：[docs/bench/data/2026-11-02-runs.csv](bench/data/2026-11-02-runs.csv)
 - 逐采样：[ss](bench/data/2026-11-02-samples-ss.csv) / [ping](bench/data/2026-11-02-samples-ping.csv)
-- 仓库：https://github.com/iliyian/android-gki-bbr-kmod
+- 仓库：https://github.com/iliyian/k80-zorn-bbr
 
 ## BBRv2 和 BBRv3
 
@@ -437,6 +437,11 @@ BBR 主要改善的是满载时的排队延迟，峰值吞吐没有稳定提升�
 
 这些都要改内核头文件并重新编译整个内核，模块做不到。Google 的 v3 分支本身是一整棵内核树。
 
+**2026-11-04 更新：BBRv3 已经在 ACK 6.1.138 上完成内核移植并真机验证。**
+`bbr3` 注册成功、可切换，开机/音频/模块加载正常。移植过程、核心栈补丁、
+BTF/CRC 验证和踩坑记录见 [`bbrv3/README.md`](https://github.com/iliyian/k80-zorn-bbr/tree/main/bbrv3)。
+"不能作为模块" 这一条仍然成立——它是内核 patchset，不是 `.ko`。
+
 **BBRv2 的情况不同。** 拿 `v2alpha-2022-08-28` 的 `tcp_bbr.c` 对着 ACK 6.1.138 编译，只需要删掉已废弃的 `.tso_segs` 字段；`sizeof(struct bbr)` 是 104 字节，刚好等于 6.1 的 `icsk_ca_priv`，`BUILD_BUG_ON` 能通过。它只使用 6.1 已有的字段，不需要改核心栈。
 
 但 v2 是 2022 年的实验分支，没有进主线，手机上的表现也没有验证。它还需要改名为 `bbr2`，才能和现有的 `bbr` 并存。这个方向可以继续试，但这次没有部署。
@@ -445,7 +450,7 @@ BBR 主要改善的是满载时的排队延迟，峰值吞吐没有稳定提升�
 
 构建脚本、KernelSU 模块、ABI 对比工具和完整的踩坑记录都在：
 
-https://github.com/iliyian/android-gki-bbr-kmod
+https://github.com/iliyian/k80-zorn-bbr
 
 测试用的测速服务端在另一个仓库：[iliyian/minimal-speedtest](https://github.com/iliyian/minimal-speedtest)。
 

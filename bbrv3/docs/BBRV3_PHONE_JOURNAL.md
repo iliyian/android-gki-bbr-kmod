@@ -1023,7 +1023,7 @@ dmesg | grep "pineapple-mtp-snd-card"     # 6.529s 声卡注册
 - `/root/bbrv3-export/patches/`（0001 core、0002 algorithm、0003 CRC）
 - `/root/gki138-bbrv3-crc-boot.img`
 
-**GitHub**：`iliyian/android-gki-bbr-kmod`（已整理 BBRv3 patchset；仓库改名 `k80-zorn-bbr`，见第 19.10 节）。
+**GitHub**：`iliyian/k80-zorn-bbr`（原名 `android-gki-bbr-kmod`；BBRv3 patchset 在 `bbrv3/`，过程记录在 `bbrv3/docs/`）。
 
 ### 19.9 已知限制 / 风险
 
