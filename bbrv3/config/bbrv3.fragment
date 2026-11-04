@@ -1,0 +1,17 @@
+# BBRv3 config fragment, relative to arch/arm64/configs/gki_defconfig
+# Verified with ACK android14-6.1-2025-06_r2 (109284bd5)
+
+CONFIG_TCP_CONG_ADVANCED=y
+CONFIG_TCP_CONG_CUBIC=y
+CONFIG_TCP_CONG_BBR=y
+CONFIG_DEFAULT_CUBIC=y
+# CONFIG_DEFAULT_BBR is not set
+
+# Keep MODVERSIONS: vendor modules carry "modversions" in vermagic.
+CONFIG_MODVERSIONS=y
+# Required on zorn for stock system_dlkm modules to load on a self-built GKI.
+# CONFIG_MODULE_SIG_PROTECT is not set
+
+CONFIG_LTO_NONE=y
+CONFIG_LOCALVERSION="-android14-11"
+# CONFIG_LOCALVERSION_AUTO is not set

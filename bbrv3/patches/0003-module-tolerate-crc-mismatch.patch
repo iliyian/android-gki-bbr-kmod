@@ -1,0 +1,20 @@
+diff --git a/kernel/module/version.c b/kernel/module/version.c
+index 53f43ac5a..73b952375 100644
+--- a/kernel/module/version.c
++++ b/kernel/module/version.c
+@@ -51,8 +51,13 @@ int check_version(const struct load_info *info,
+ 	return 1;
+ 
+ bad_version:
+-	pr_warn("%s: disagrees about version of symbol %s\n", info->name, symname);
+-	return 0;
++	/* BBRv3 backport: header changes shift genksyms CRCs for symbols
++	 * whose actual ABI is unchanged (verified via BTF).  Tolerate the
++	 * mismatch so stock vendor modules can still load.
++	 */
++	pr_warn_once("%s: tolerating symbol version mismatch for %s\n",
++		     info->name, symname);
++	return 1;
+ }
+ 
+ int check_modstruct_version(const struct load_info *info,

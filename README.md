@@ -1,4 +1,12 @@
-# android-gki-bbr-kmod
+# k80-zorn-bbr
+
+> Redmi K80 (zorn) 上的 BBR 实验：BBRv1 模块方案 + BBRv3 内核移植。
+>
+> **2026-11-04：BBRv3 已成功移植到 ACK 6.1.138**，真机开机、`bbr3` 可切换、
+> 音频/显示正常。详见 [`bbrv3/README.md`](bbrv3/README.md) 和
+> [`bbrv3/docs/BBRV3_PHONE_JOURNAL.md`](bbrv3/docs/BBRV3_PHONE_JOURNAL.md)。
+>
+> 下面仍然保留 BBRv1 模块方案（不刷内核、不需要 vendor 源码）的完整说明。
 
 在 **不更换内核、不刷 GKI、不需要厂商内核源码** 的前提下，给 Android GKI 设备加载自编译的 `tcp_bbr.ko`，启用 BBR 拥塞控制，并配合 `fq` qdisc。
 
