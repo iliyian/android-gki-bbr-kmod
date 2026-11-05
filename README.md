@@ -10,6 +10,9 @@
 > 同时定位并回退了 stable 6.1.141 引入的 DRM valid-clones 检查，解决 zorn 在 6.1.145+
 > 的闪屏。详见 [`gki176/README.md`](gki176/README.md)。
 >
+> **BBR3 + qdisc Control**：配套模块 [`bbr3-fq/`](bbr3-fq/) 提供 SukiSU WebUI，
+> 可在 `bbr3/bbr/cubic/reno` 与 `fq/fq_codel/codel/sfq/pfifo_fast/pfifo` 之间手动切换并持久化。
+>
 > 下面仍然保留 BBRv1 模块方案（不刷内核、不需要 vendor 源码）的完整说明。
 
 在 **不更换内核、不刷 GKI、不需要厂商内核源码** 的前提下，给 Android GKI 设备加载自编译的 `tcp_bbr.ko`，启用 BBR 拥塞控制，并配合 `fq` qdisc。
@@ -150,6 +153,23 @@ wlan0 / rmnet_data* / rmnet_ipa0: qdisc fq
 - **上传**：BBR 的主要收益是降低排队延迟；在深缓冲蜂窝上行上，吞吐不一定优于 CUBIC，遇到丢包还会退让。
 
 完整方法、三台不同 RTT 服务器的结果与局限见 [docs/bench/2026-11-02-bbr-vs-cubic.md](docs/bench/2026-11-02-bbr-vs-cubic.md)，逐轮脱敏数据见 [CSV](docs/bench/data/2026-11-02-runs.csv)，测试脚本见 [scripts/bench/](scripts/bench/)。
+
+## BBR3 + qdisc Control 模块
+
+[`bbr3-fq/`](bbr3-fq/) 是一个独立的 SukiSU Ultra / KernelSU 模块，用来在 BBRv3
+内核上持久化用户选择的 CC 和 qdisc，并提供一个模块 WebUI 手动切换：
+
+- CC：`bbr3` / `bbr` / `cubic` / `reno`
+- qdisc：`fq` / `fq_codel` / `codel` / `sfq` / `pfifo_fast` / `pfifo`
+- 选择写入 `/data/adb/bbr3_fq.conf`，`service.sh` 每 15 秒保持；接口重建后自动补挂 qdisc
+- WebUI 显示当前值、配置值、守护状态、每个受管接口的 qdisc 和最近事件
+- 安装、CLI 和注意事项见 [`bbr3-fq/README.md`](bbr3-fq/README.md)
+
+```sh
+cd bbr3-fq
+zip -r ../bbr3_fq-v1.3.zip . -x '*.DS_Store'
+# 在 SukiSU / KernelSU 中安装该 zip，重启
+```
 
 ## 回退
 

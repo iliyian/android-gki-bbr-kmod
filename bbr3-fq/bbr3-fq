@@ -1,0 +1,343 @@
+#!/system/bin/sh
+# bbr3-fq - status/log/config helper for the bbr3_fq KernelSU module.
+# The module WebUI talks to this script through `ksu.exec`.
+
+MODDIR=/data/adb/modules/bbr3_fq
+. "$MODDIR/common.sh"
+
+warn=0
+ok()  { echo "[OK] $*"; }
+bad() { echo "[!!] $*"; warn=$((warn + 1)); }
+
+show_status() {
+    load_config
+    echo "=== BBR3 + qdisc 体检 ==="
+    echo "时间: $(/system/bin/date '+%Y-%m-%d %H:%M:%S')"
+    echo "内核: $(/system/bin/uname -r)"
+    echo "配置: cc=$CFG_CC qdisc=$CFG_QDISC"
+    boot=$(/system/bin/getprop sys.boot_completed)
+    if [ "$boot" = "1" ]; then
+        echo "启动: boot_completed=1"
+    else
+        bad "启动: 系统尚未完成启动（boot_completed=$boot）"
+    fi
+    echo
+
+    avail=$(/system/bin/cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)
+    if cc_available "$CFG_CC"; then
+        ok "内核已注册 $CFG_CC（可用: $avail）"
+    else
+        bad "内核未注册 $CFG_CC（可用: ${avail:-读取失败}）"
+    fi
+
+    cur=$(/system/bin/cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)
+    if [ "$cur" = "$CFG_CC" ]; then
+        ok "当前拥塞控制: $cur"
+    else
+        bad "当前拥塞控制: ${cur:-读取失败}（配置: $CFG_CC）"
+    fi
+
+    qd=$(/system/bin/cat /proc/sys/net/core/default_qdisc 2>/dev/null)
+    if [ "$qd" = "$CFG_QDISC" ]; then
+        ok "默认队列规则: $qd"
+    else
+        bad "默认队列规则: ${qd:-读取失败}（配置: $CFG_QDISC）"
+    fi
+
+    if service_alive; then
+        ok "后台守护: 运行中（pid $(service_pid)）"
+    else
+        bad "后台守护: 未运行（开机后应由 KernelSU 自动启动）"
+    fi
+    echo
+
+    total=0
+    good=0
+    names=""
+    missing=""
+    for sysdev in /sys/class/net/wlan* /sys/class/net/rmnet_data* /sys/class/net/utun* /sys/class/net/tun[0-9]*; do
+        [ -e "$sysdev" ] || continue
+        dev=${sysdev##*/}
+        total=$((total + 1))
+        names="$names $dev"
+        q=$($TC qdisc show dev "$dev" 2>/dev/null | /system/bin/head -n 1)
+        case "$q" in
+            "qdisc $CFG_QDISC "*) good=$((good + 1)) ;;
+            *)                    missing="$missing $dev" ;;
+        esac
+    done
+    if [ "$total" -eq 0 ]; then
+        bad "网络接口: 未发现可管理接口"
+    elif [ -z "$missing" ]; then
+        ok "接口队列: $good/$total 已启用 $CFG_QDISC"
+        echo "     接口:$names"
+    else
+        bad "接口队列: $good/$total 已启用 $CFG_QDISC；未启用:$missing"
+        echo "     接口:$names"
+    fi
+
+    if /system/bin/dmesg >/dev/null 2>&1; then
+        errs=$(/system/bin/dmesg 2>/dev/null | /system/bin/grep -iE \
+            'Failed to insmod|disagrees about version|exports protected symbol|cannot allocate per-socket' \
+            | /system/bin/tail -n 5)
+        if [ -n "$errs" ]; then
+            n=$(printf '%s\n' "$errs" | /system/bin/wc -l)
+            bad "内核报错: 发现 $n 条模块加载/BBR 错误"
+            printf '%s\n' "$errs" | /system/bin/sed 's/^/     /'
+        else
+            ok "内核报错: 未发现模块加载/BBR 错误"
+        fi
+    else
+        bad "内核日志: 无权限读取（请用 root 执行）"
+    fi
+    echo
+
+    echo "最近事件:"
+    events=$(/system/bin/grep -v 'heartbeat:' "$LOG" 2>/dev/null | /system/bin/tail -n 5)
+    if [ -n "$events" ]; then
+        printf '%s\n' "$events" | /system/bin/sed 's/^[0-9-]* //' | /system/bin/sed 's/^/  /'
+    else
+        echo "  （暂无变更事件）"
+    fi
+    hb=$(/system/bin/grep 'heartbeat:' "$LOG" 2>/dev/null | /system/bin/tail -n 1)
+    if [ -n "$hb" ]; then
+        echo "最近心跳: $(printf '%s' "$hb" | /system/bin/sed 's/^[0-9-]* //')"
+    fi
+    echo
+
+    if [ "$warn" -eq 0 ]; then
+        echo "结论: 一切正常"
+    else
+        echo "结论: 发现 $warn 个问题"
+        echo "可尝试: su -c bbr3-fq apply"
+        echo "或重启守护: su -c bbr3-fq restart"
+    fi
+}
+
+show_detail() {
+    load_config
+    echo "=== raw detail ==="
+    echo "kernel: $(/system/bin/uname -r)"
+    echo "config: cc=$CFG_CC qdisc=$CFG_QDISC"
+    echo "cc:     $(/system/bin/cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)"
+    echo "avail:  $(/system/bin/cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)"
+    echo "qdisc:  $(/system/bin/cat /proc/sys/net/core/default_qdisc 2>/dev/null)"
+    echo "qdiscs: $(available_qdiscs | /system/bin/tr '\n' ' ')"
+    echo
+    echo "--- qdisc ---"
+    for sysdev in /sys/class/net/wlan* /sys/class/net/rmnet_data* /sys/class/net/utun* /sys/class/net/tun[0-9]*; do
+        [ -e "$sysdev" ] || continue
+        dev=${sysdev##*/}
+        echo "[$dev]"
+        $TC qdisc show dev "$dev" 2>/dev/null
+    done
+    echo
+    echo "--- dmesg ---"
+    /system/bin/dmesg 2>/dev/null | /system/bin/grep -iE \
+        'bbr3|tcp_bbr|Failed to insmod|disagrees about version|exports protected symbol|cannot allocate per-socket|tolerating symbol version' \
+        | /system/bin/tail -n 30
+    echo
+    echo "--- log tail (last 60) ---"
+    /system/bin/tail -n 60 "$LOG" 2>/dev/null || echo "(empty)"
+}
+
+# JSON consumed by the module WebUI. Keep this as the single source of truth
+# for both the current and the configured values.
+ui_state() {
+    load_config
+    kernel=$(/system/bin/uname -r)
+    boot=$(/system/bin/getprop sys.boot_completed 2>/dev/null)
+    cur_cc=$(/system/bin/cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)
+    cur_qd=$(/system/bin/cat /proc/sys/net/core/default_qdisc 2>/dev/null)
+    avail_cc=$(/system/bin/cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)
+
+    if service_alive; then
+        alive=true
+        pid=$(service_pid)
+    else
+        alive=false
+        pid=0
+    fi
+
+    printf '{"kernel":%s,"boot":%s,"moduleVersion":%s,' \
+        "$(json_str "$kernel")" "$(json_str "$boot")" "$(json_str "$(module_version)")"
+
+    printf '"cc":{"current":%s,"configured":%s,"available":[' "$(json_str "$cur_cc")" "$(json_str "$CFG_CC")"
+    first=1
+    for c in $avail_cc; do
+        [ "$first" -eq 1 ] || printf ','
+        first=0
+        json_str "$c"
+    done
+    printf ']},"qdisc":{"current":%s,"configured":%s,"available":[' "$(json_str "$cur_qd")" "$(json_str "$CFG_QDISC")"
+    first=1
+    for q in $(available_qdiscs); do
+        [ "$first" -eq 1 ] || printf ','
+        first=0
+        json_str "$q"
+    done
+    printf ']},"daemon":{"alive":%s,"pid":%s},"interfaces":[' "$alive" "${pid:-0}"
+
+    first=1
+    for sysdev in /sys/class/net/wlan* /sys/class/net/rmnet_data* /sys/class/net/utun* /sys/class/net/tun[0-9]*; do
+        [ -e "$sysdev" ] || continue
+        dev=${sysdev##*/}
+        q=$($TC qdisc show dev "$dev" 2>/dev/null | /system/bin/head -n 1 | /system/bin/awk '{print $2}')
+        [ "$first" -eq 1 ] || printf ','
+        first=0
+        printf '{"name":%s,"qdisc":%s,"ok":%s}' "$(json_str "$dev")" "$(json_str "$q")" \
+            "$([ "$q" = "$CFG_QDISC" ] && echo true || echo false)"
+    done
+    printf '],"events":['
+
+    first=1
+    /system/bin/grep -v 'heartbeat:' "$LOG" 2>/dev/null | /system/bin/tail -n 8 | while IFS= read -r line; do
+        [ "$first" -eq 1 ] || printf ','
+        first=0
+        json_str "$line"
+    done
+    printf ']}\n'
+}
+
+module_version() {
+    /system/bin/grep '^version=' "$MODDIR/module.prop" 2>/dev/null | /system/bin/cut -d= -f2-
+}
+
+set_pair() {
+    new_cc=$1
+    new_qd=$2
+    load_config
+
+    if ! cc_available "$new_cc"; then
+        echo "错误: 内核不支持拥塞控制 '$new_cc'（可用: $(/system/bin/cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)）" >&2
+        return 1
+    fi
+    if ! qdisc_supported "$new_qd"; then
+        echo "错误: 内核不支持队列规则 '$new_qd'（可用: $(available_qdiscs | /system/bin/tr '\n' ' ')）" >&2
+        return 1
+    fi
+
+    CFG_CC=$new_cc
+    CFG_QDISC=$new_qd
+    if ! save_config; then
+        echo "错误: 无法写入 $CONFIG" >&2
+        return 1
+    fi
+    log "config: cc=$CFG_CC qdisc=$CFG_QDISC"
+
+    ensure_sysctls
+    apply_qdisc
+
+    cur_cc=$(/system/bin/cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)
+    cur_qd=$(/system/bin/cat /proc/sys/net/core/default_qdisc 2>/dev/null)
+    if [ "$cur_cc" = "$new_cc" ] && [ "$cur_qd" = "$new_qd" ]; then
+        echo "已应用: cc=$cur_cc qdisc=$cur_qd"
+        return 0
+    fi
+    echo "配置已保存，但当前为 cc=$cur_cc qdisc=$cur_qd；守护进程会在 15 秒内重试" >&2
+    return 1
+}
+
+set_one() {
+    load_config
+    case "$1" in
+        cc)
+            set_pair "$2" "$CFG_QDISC"
+            ;;
+        qdisc)
+            set_pair "$CFG_CC" "$2"
+            ;;
+        *)
+            echo "错误: set 只接受 cc 或 qdisc" >&2
+            return 1
+            ;;
+    esac
+}
+
+usage() {
+    cat <<'EOF'
+bbr3-fq - BBR3 + qdisc 模块状态/配置工具
+
+用法:
+  bbr3-fq [status]            人类可读体检（默认，Action 按钮用的就是这个）
+  bbr3-fq detail              原始详情（sysctl/qdisc/dmesg/log）
+  bbr3-fq log [N]             日志最后 N 行（默认 40）
+  bbr3-fq watch               实时跟随日志（Ctrl-C 退出）
+  bbr3-fq apply               立即重新应用当前配置
+  bbr3-fq restart             重启后台守护循环
+  bbr3-fq set cc <name>       切换拥塞控制并持久化
+  bbr3-fq set qdisc <name>    切换队列规则并持久化
+  bbr3-fq set-pair <cc> <q>   同时切换两者（WebUI 使用）
+  bbr3-fq reset               恢复推荐配置 bbr3 + fq
+  bbr3-fq ccs                 列出内核可用拥塞控制
+  bbr3-fq qdiscs              列出内核可用队列规则
+  bbr3-fq ui-state            WebUI 使用的 JSON 状态
+  bbr3-fq clear               清空日志
+  bbr3-fq help                显示本帮助
+EOF
+}
+
+case "$1" in
+    ""|status|check)
+        show_status
+        ;;
+    detail)
+        show_detail
+        ;;
+    log)
+        /system/bin/tail -n "${2:-40}" "$LOG" 2>/dev/null || echo "(empty)"
+        ;;
+    watch)
+        echo "following $LOG (Ctrl-C to stop)"
+        /system/bin/tail -f "$LOG"
+        ;;
+    apply)
+        load_config
+        ensure_sysctls
+        apply_qdisc
+        echo "已重新应用: cc=$(/system/bin/cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null) qdisc=$(/system/bin/cat /proc/sys/net/core/default_qdisc 2>/dev/null)"
+        ;;
+    restart)
+        pid=$(service_pid)
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+        rm -f "$MODDIR/service.pid"
+        /system/bin/setsid /system/bin/sh "$MODDIR/service.sh" >>"$LOG" 2>&1 &
+        /system/bin/sleep 1
+        if service_alive; then
+            echo "后台守护已重启（pid $(service_pid)）"
+        else
+            echo "重启失败，请查看 $LOG"
+        fi
+        ;;
+    set)
+        shift
+        set_one "$@"
+        ;;
+    set-pair)
+        set_pair "$2" "$3"
+        ;;
+    reset)
+        set_pair "$DEFAULT_CC" "$DEFAULT_QDISC"
+        ;;
+    ccs)
+        /system/bin/cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null | /system/bin/tr ' ' '\n' | /system/bin/sed '/^$/d'
+        ;;
+    qdiscs)
+        available_qdiscs
+        ;;
+    ui-state)
+        ui_state
+        ;;
+    clear)
+        : >"$LOG"
+        echo "日志已清空: $LOG"
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        echo "未知命令: $1"
+        usage
+        exit 1
+        ;;
+esac

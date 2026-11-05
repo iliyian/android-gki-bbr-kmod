@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080b12">
+  <title>BBR3 Control</title>
+  <link rel="stylesheet" href="/internal/insets.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg class="svg-defs" aria-hidden="true" focusable="false">
+    <symbol id="i-activity" viewBox="0 0 24 24">
+      <path d="M3 12h4l3-9 4 18 3-9h4"/>
+    </symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24">
+      <path d="M20 11a8 8 0 1 0-2.3 6.3"/>
+      <path d="M20 4v7h-7"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+      <path d="M20 6 9 17l-5-5"/>
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24">
+      <path d="M12 3 2.7 19a1.6 1.6 0 0 0 1.4 2.4h15.8a1.6 1.6 0 0 0 1.4-2.4Z"/>
+      <path d="M12 9v4.5"/>
+      <path d="M12 17.2h.01"/>
+    </symbol>
+    <symbol id="i-server" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="17" height="6.5" rx="1.8"/>
+      <rect x="3.5" y="14" width="17" height="6.5" rx="1.8"/>
+      <path d="M7 6.75h.01M7 17.25h.01"/>
+    </symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24">
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2"/>
+      <rect x="9.5" y="9.5" width="5" height="5" rx="1"/>
+      <path d="M9 2.5v4M15 2.5v4M9 17.5v4M15 17.5v4M2.5 9h4M2.5 15h4M17.5 9h4M17.5 15h4"/>
+    </symbol>
+    <symbol id="i-power" viewBox="0 0 24 24">
+      <path d="M12 3v8"/>
+      <path d="M6.2 6.5a8 8 0 1 0 11.6 0"/>
+    </symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24">
+      <path d="M13 2.5 4 14h6l-1 7.5L19 10h-6Z"/>
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9"/>
+      <path d="M12 10.5V17"/>
+      <path d="M12 7.3h.01"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24">
+      <path d="m6 6 12 12M18 6 6 18"/>
+    </symbol>
+  </svg>
+
+  <div class="preview-banner" id="previewBanner" hidden>
+    <svg aria-hidden="true"><use href="#i-info"/></svg>
+    <span>预览模式：未检测到 SukiSU WebUI 桥接，界面使用示例数据。</span>
+  </div>
+
+  <div class="app">
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><svg><use href="#i-activity"/></svg></div>
+        <div class="brand-copy">
+          <h1>BBR3 Control</h1>
+          <p>拥塞控制与队列调度</p>
+        </div>
+      </div>
+      <div class="status-pill" id="daemonPill" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="daemonPillText">读取中</span>
+      </div>
+    </header>
+
+    <main>
+      <div class="notice notice-danger" id="errorNotice" hidden>
+        <svg aria-hidden="true"><use href="#i-alert"/></svg>
+        <div class="notice-body">
+          <strong id="errorTitle">操作失败</strong>
+          <p id="errorText"></p>
+          <details id="errorDetails" hidden>
+            <summary>技术详情</summary>
+            <pre id="errorDetailText"></pre>
+          </details>
+        </div>
+        <button class="text-btn" id="dismissErrorBtn" type="button">关闭</button>
+      </div>
+
+      <section class="card hero" aria-labelledby="heroTitle">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="hero-head">
+          <div>
+            <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span>当前生效</p>
+            <h2 class="hero-title" id="heroTitle">网络路径配置</h2>
+          </div>
+          <button class="icon-btn" id="refreshBtn" type="button" aria-label="刷新状态" title="刷新状态">
+            <svg aria-hidden="true"><use href="#i-refresh"/></svg>
+          </button>
+        </div>
+
+        <div class="current-grid">
+          <div class="current-block">
+            <span class="current-label">拥塞控制 · CC</span>
+            <span class="current-value mono" id="currentCC">—</span>
+            <span class="current-sub" id="currentCCName">读取中</span>
+          </div>
+          <div class="current-sep" aria-hidden="true"></div>
+          <div class="current-block">
+            <span class="current-label">队列规则 · qdisc</span>
+            <span class="current-value mono" id="currentQD">—</span>
+            <span class="current-sub" id="currentQDName">读取中</span>
+          </div>
+        </div>
+
+        <div class="hero-meta">
+          <span class="meta-item"><svg aria-hidden="true"><use href="#i-cpu"/></svg><span class="mono" id="kernelVersion">—</span></span>
+          <span class="meta-item"><svg aria-hidden="true"><use href="#i-server"/></svg><span id="ifaceSummary">—</span></span>
+        </div>
+
+        <div class="notice notice-warn" id="syncNotice" hidden>
+          <svg aria-hidden="true"><use href="#i-alert"/></svg>
+          <div class="notice-body">
+            <strong>系统当前值与配置不一致</strong>
+            <p id="syncNoticeText">守护进程会自动恢复配置值。</p>
+          </div>
+          <button class="text-btn" id="syncBtn" type="button">立即同步</button>
+        </div>
+
+        <div class="notice notice-danger" id="daemonNotice" hidden>
+          <svg aria-hidden="true"><use href="#i-alert"/></svg>
+          <div class="notice-body">
+            <strong>后台守护未运行</strong>
+            <p>接口重建后配置可能丢失，建议立即重启守护。</p>
+          </div>
+          <button class="text-btn" id="startDaemonBtn" type="button">重启守护</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="ccHeading">
+        <div class="section-head">
+          <div>
+            <h2 id="ccHeading">拥塞控制算法</h2>
+            <p>决定发送端如何估算带宽与排队延迟</p>
+          </div>
+          <span class="count-pill" id="ccCount">检测中</span>
+        </div>
+        <div class="option-list" id="ccOptions" role="radiogroup" aria-labelledby="ccHeading">
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+        </div>
+        <p class="hint">
+          <svg aria-hidden="true"><use href="#i-info"/></svg>
+          <span>切换只影响之后建立的连接，已有连接保持原算法。</span>
+        </p>
+      </section>
+
+      <section class="card" aria-labelledby="qdiscHeading">
+        <div class="section-head">
+          <div>
+            <h2 id="qdiscHeading">队列规则</h2>
+            <p>决定数据包在网卡队列中的调度方式</p>
+          </div>
+          <span class="count-pill" id="qdiscCount">检测中</span>
+        </div>
+        <div class="option-list qdisc-grid" id="qdiscOptions" role="radiogroup" aria-labelledby="qdiscHeading">
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+        </div>
+        <p class="hint">
+          <svg aria-hidden="true"><use href="#i-info"/></svg>
+          <span>切换会重建受管接口的根队列，传输中的连接可能出现短暂抖动。FQ 为 BBR 提供 pacing。</span>
+        </p>
+      </section>
+
+      <div class="preset-row">
+        <button class="btn btn-ghost" id="presetBtn" type="button">
+          <svg aria-hidden="true"><use href="#i-zap"/></svg>
+          <span>恢复推荐配置</span>
+          <span class="mono preset-values">bbr3 + fq</span>
+        </button>
+      </div>
+
+      <section class="card" aria-labelledby="healthHeading">
+        <div class="section-head">
+          <div>
+            <h2 id="healthHeading">运行状态</h2>
+            <p>守护进程与受管接口</p>
+          </div>
+          <button class="icon-btn" id="restartBtn" type="button" aria-label="重启后台守护" title="重启后台守护">
+            <svg aria-hidden="true"><use href="#i-power"/></svg>
+          </button>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat">
+            <span class="stat-icon" id="daemonStatIcon"><svg aria-hidden="true"><use href="#i-cpu"/></svg></span>
+            <div class="stat-copy">
+              <span class="stat-label">后台守护</span>
+              <strong class="stat-value" id="daemonState">—</strong>
+            </div>
+          </div>
+          <div class="stat">
+            <span class="stat-icon" id="ifaceStatIcon"><svg aria-hidden="true"><use href="#i-server"/></svg></span>
+            <div class="stat-copy">
+              <span class="stat-label">接口匹配</span>
+              <strong class="stat-value" id="ifaceState">—</strong>
+            </div>
+          </div>
+          <div class="stat">
+            <span class="stat-icon"><svg aria-hidden="true"><use href="#i-check"/></svg></span>
+            <div class="stat-copy">
+              <span class="stat-label">系统启动</span>
+              <strong class="stat-value" id="bootState">—</strong>
+            </div>
+          </div>
+          <div class="stat">
+            <span class="stat-icon"><svg aria-hidden="true"><use href="#i-activity"/></svg></span>
+            <div class="stat-copy">
+              <span class="stat-label">模块版本</span>
+              <strong class="stat-value mono" id="moduleVersion">—</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="iface-list" id="ifaceList" aria-label="受管网络接口"></div>
+
+        <details class="log-details">
+          <summary>
+            <span>最近事件</span>
+            <span class="log-count" id="eventCount"></span>
+          </summary>
+          <pre class="log" id="logTail">—</pre>
+        </details>
+      </section>
+
+      <footer class="footer">
+        <span>BBR3 Control</span>
+        <span class="footer-dot" aria-hidden="true"></span>
+        <span class="mono">/data/adb/bbr3_fq.conf</span>
+      </footer>
+    </main>
+  </div>
+
+  <div class="apply-dock">
+    <div class="apply-inner">
+      <div class="apply-copy">
+        <span class="apply-label" id="applyLabel">读取中</span>
+        <span class="apply-sub mono" id="applySub">—</span>
+      </div>
+      <button class="btn btn-primary" id="applyBtn" type="button" disabled>
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <span class="btn-text">应用配置</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

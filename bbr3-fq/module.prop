@@ -1,0 +1,6 @@
+id=bbr3_fq
+name=BBR3 + qdisc Control
+version=v1.3
+versionCode=4
+author=iliyian
+description=Persists a user-selectable TCP congestion control (bbr3/bbr/cubic/reno) and qdisc (fq/fq_codel/codel/sfq/pfifo_fast/pfifo) on wlan/rmnet/VPN interfaces. Open the module WebUI to switch and apply both values; the daemon keeps them enforced. `su -c bbr3-fq status` for a CLI health summary.
