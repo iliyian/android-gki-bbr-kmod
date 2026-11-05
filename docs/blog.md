@@ -48,9 +48,11 @@ CONFIG_DEFAULT_TCP_CONG="cubic"
 
 第一，小米没有发布 `6.1.138-mi` 的源码。MiCode 上只有更早的 `bsp-zorn-v-oss`（6.1.68 / Android 15），没有 Android 16 对应的分支。
 
-第二，刷通用 GKI 或第三方内核会破坏 HyperOS 的显示栈。这台机器试过通用 GKI 6.1.145 和第三方 zorn 6.1.176 内核，都能启动，但屏幕会闪，vendor 的 HWC/DRM 反复报 `COMMIT failed: 11`。显示相关的 vendor 模块和内核版本是绑死的，换内核就会出问题。
+第二，刷通用 GKI 或第三方内核会破坏 HyperOS 的显示栈。这台机器试过通用 GKI 6.1.145 和第三方 zorn 6.1.176 内核，都能启动，但屏幕会闪，vendor 的 HWC/DRM 反复报 `COMMIT failed: 11`。当时看起来像是显示 vendor 模块和内核版本绑死，换内核就会出问题。
 
-所以完整内核这条路在这个设备上走不通。
+> **2026-11-05 更正**：这个判断只对了一半。闪屏不是“新内核一定不兼容”，而是 stable 6.1.141 引入的一个 DRM 校验和 zorn vendor `msm_drm` 的 `possible_clones` 冲突；回退该检查后 6.1.176 显示正常。详见文末“6.1.176：显示兼容性与双 BBR”。
+
+所以完整内核这条路在当时看来走不通，但后来证明它是可修的，不是死路。
 
 ## 第三条路：运行时加载模块
 
@@ -446,6 +448,97 @@ BTF/CRC 验证和踩坑记录见 [`bbrv3/README.md`](https://github.com/iliyian/
 
 但 v2 是 2022 年的实验分支，没有进主线，手机上的表现也没有验证。它还需要改名为 `bbr2`，才能和现有的 `bbr` 并存。这个方向可以继续试，但这次没有部署。
 
+## BBRv3 实测：延迟有收益，吞吐没有
+
+2026-11-04 深夜到 11-05 凌晨，在已经移植好 `bbr3` 的同一台 K80 上补了一组 A/B。这次只做评测，内核和补丁都没有改动；网络换成了默认数据卡中国电信，测试时回落到 LTE（下载 RSRP −87 dBm / SNR 24，上传 −94 / SNR 17），不再是 11-02 那次的联通 5G。服务端仍是阿里云北京那台默认配置的测速机。
+
+对照组和上次一致：
+
+| 组 | 拥塞控制 | qdisc |
+|---|---|---|
+| A | cubic | mq + pfifo_fast（厂商默认） |
+| C | bbr3 | fq |
+
+每轮新起 `curl`，ABBA 交替，轮间 3 秒；下载 32 MiB × 6 对，上传 8 MiB × 4 对；测试时暂停 `bbr3_fq` 模块的看门狗，逐轮用 `tc` 读回 qdisc、用 `ss` 确认 socket 真的用了当轮 CC、检查路由没有经过 `tun`。用的是原版 `cc_bench.sh`，没有改 harness。
+
+### 下载
+
+| | cubic + mq | bbr3 + fq |
+|---|---:|---:|
+| 中位 | 28.9 Mbps | 32.8 Mbps |
+| 平均 | 28.3 Mbps | 32.2 Mbps |
+| 配对中位差 | — | +15.8%，4/6 胜 |
+
+第 4 对 cubic 只有 14.8 Mbps（其余 28–39 Mbps），剔除后配对中位只剩 +2.9%，方向不稳。下载方向手机只是接收方，拥塞控制在服务端；客户端 bbr3 只影响 ACK，差异不能归因。
+
+### 上传
+
+吞吐没有稳定差异：
+
+| 对次 | cubic | bbr3 | 差值 |
+|---|---:|---:|---:|
+| 1 | 2.11 Mbps | 2.04 Mbps | −3.5% |
+| 2 | 2.72 Mbps | 3.18 Mbps | +17.1% |
+| 3 | 1.60 Mbps | 2.10 Mbps | +31.3% |
+| 4 | 3.56 Mbps | 1.97 Mbps | −44.6% |
+
+配对中位 +6.8%，几何平均 −4.8%，2/4 胜；两臂中位是 2.41 vs 2.07 Mbps。吞吐没有可复现的收益。
+
+队列指标则是完全分离：
+
+| 指标 | cubic | bbr3 |
+|---|---:|---:|
+| 发送侧 RTT p50 | 1491 ms | **197 ms** |
+| 发送侧 RTT p95 | 2683 ms | **388 ms** |
+| 发送侧 RTT p99 | 3084 ms | **515 ms** |
+| cwnd p50 | 779 段 | **56 段** |
+| cwnd p95 | 805 段 | **69 段** |
+| unacked p50 | 340 段 | **50 段** |
+| 上传压载 ping p50 | 80.5 ms | **36.7 ms** |
+| 上传压载 ping p95 | 237 ms | **135 ms** |
+| 样本 RTT > 1 s | 48–95% | 0%（首轮除外） |
+
+逐轮看，cubic 的 RTT p95 是 1.9–4.8 s，bbr3 是 0.30–0.42 s（首轮除外）；cwnd p95 是 747–1069 段 vs 57–76 段（首轮 234）。cubic 的 p95 基本等于它的上限，bbr3 的 p95 是探测周期把 cwnd 从 ~50 推到 ~70。
+
+4 对的样本量很小。队列指标 4/4 完全分离：配对符号翻转精确检验 p=0.125（n=4 能取到的最小值），配对 t 检验 p=0.0005–0.011（假设正态）；吞吐的配对检验 p=0.81–0.88。非配对置换会给队列指标 0.029，但这次是 ABBA 配对设计，那个数偏乐观，不能拿来当结论。
+
+### 和 BBRv1 比
+
+把 11-02 的 BBRv1 数据（联通 5G，12 对上传）用同样的稳态口径重算：
+
+| 指标 | BBRv1 | BBRv3 |
+|---|---:|---:|
+| 发送侧 RTT p50 | 198 ms | 197 ms |
+| 发送侧 RTT p95 | 368 ms | 388 ms |
+| 发送侧 RTT p99 | 419 ms | 515 ms |
+| cwnd p95 | 125 段 | 69 段 |
+| 吞吐 vs cubic | 几何 −10.2% | 几何 −4.8% |
+| 重传 | 0.45–3.17%（晚高峰） | 0.28% |
+
+两者在延迟和吞吐上没有可分辨的差异；v3 的 cwnd 更保守一些。但这是跨天、跨运营商、跨内核的比较，不能当成严格的 v1-vs-v3 A/B。
+
+### 为什么没有额外收益
+
+- 移植用的是 2025-03 的 v3 快照，PLB / ecn_low 被裁掉；在这台机器上它们本来就是死代码，剩下的行为和 v1 很接近。
+- v3 相对 v1 的主要改进是丢包恢复、ECN、PLB。这次 TCP 重传两边合计都是 69 段 / 0.28%，没有 RTO、没有 SYN 重传、没有 ECN，这些机制没有工作可做。
+- 瓶颈是 LTE 上行调度，只有 2–3.5 Mbps。两版的 cwnd 都足够填满上行，多出来的 cwnd 只会变成排队。
+- 单流、干净链路，BBR 的公平性/竞争性优势也体现不出来。
+
+### 几个测量坑
+
+- 下载方向是结构性无效：手机是接收端，CC 在服务端，手机端换什么都没法提高下载吞吐。
+- 4 对样本要用配对检验；非配对置换会把 p 算小到 0.029，但 ABBA 设计应该按配对来。
+- `ping` 的 `icmp_seq` 从 1 开始。按 seq 0 计算会凭空多出 0.5–2.9% 丢包；这次实际 ICMP 丢包是 0。
+- cubic 的深队列会污染紧接其后的 bbr3 轮。第一对 bbr3 的 p95 是 1546 ms，后面三轮是 300–415 ms；3 秒冷却不够，最好等队列排空或多留几秒。
+- `ss` 的最后一帧可能没有 `retrans:` 字段，判断重传要用 `/proc/net/snmp` 的前后差值。
+- 接口和 VPN 会让旧脚本解析到错误网卡；这次最后路由直连到 `rmnet_data5`，脚本自己解析对了才跑对。
+
+### 结论
+
+BBRv3 在这条链路上的收益是队列和尾延迟，不是吞吐：上传 RTT 从 1.5 s 压到 0.2 s，p95 从 2.7 s 压到 0.4 s，cwnd 从 ~780 段压到 ~56 段，代价是吞吐持平到略低。和 BBRv1 比没有可分辨的额外提升；v3 的丢包恢复/ECN 在这条 0.28% 重传的链路上没有触发条件。
+
+要回答“v1 vs v3”只能把官方 BBRv1 编进同一内核做严格 A/B；要验证 v3 的丢包恢复，需要在弱信号、切换或竞争流下测。这两项这次都没有做。
+
 ## 开源仓库
 
 构建脚本、KernelSU 模块、ABI 对比工具和完整的踩坑记录都在：
@@ -464,7 +557,7 @@ https://github.com/iliyian/k80-zorn-bbr
 - 踩坑文档和 K80 实测记录；
 - K80 对应的预编译 `.ko` 和模块 zip。
 
-预编译产物只适用于 `6.1.138-android14-11-g965475777129-mi`。其他设备或内核必须重新编译，并重新做 BTF 校验。
+预编译产物只适用于 `6.1.138-android14-11-g965475777129-mi`。其他设备或内核必须重新编译，并重新做 BTF 校验。6.1.176 内核现在可以正常显示和加载模块，但仓库里的预编译 `.ko` 仍然只针对 6.1.138；换到 6.1.176 需要按新内核重新验证或编译。
 
 构建脚本大致这样用：
 
@@ -490,3 +583,41 @@ adb exec-out su -c 'cat /proc/config.gz' > config.gz
 6. fq 要逐接口替换，多队列设备的 `default_qdisc` 不会自动生效。
 7. 系统 OTA 前先禁用模块。内核更新后 ABI 可能变化，需要按新版本重新编译。
 8. 立即回退：`sysctl -w net.ipv4.tcp_congestion_control=cubic`；永久关闭：禁用或删除 KernelSU 模块后重启。
+
+## 6.1.176：显示兼容性与双 BBR
+
+2026-11-05 把 6.1.176 的闪屏定位到了具体补丁，而不是“通用内核不行”。
+
+### 闪屏根因
+
+- stable **6.1.141** 引入上游 `41b4b11da0215`（`drm: Add valid clones check`）。`drm_atomic_helper_check_modeset()` 开始要求同一个 CRTC 上所有 encoder 的 `possible_clones` 互相覆盖。
+- zorn 的 vendor `msm_drm.ko`（6.1.68 编）在 **CRTC 203** 上同时挂了 DSI 和 Virtual 两个 encoder（`encoder_mask=0x6`），它们的 `possible_clones` 不互反。于是 `drm_atomic_check_only()` 返回 `-EINVAL`，SDM 每帧重试失败：
+
+```
+[drm:drm_atomic_helper_check_modeset] crtc203 failed valid clone check for mask 0x6
+SDM: drmModeAtomicCommit failed with error 22 (Invalid argument). crtc=203
+SDM: COMMIT failed: 11
+HwcComposer: presentOrValidateDisplay 0 presentFence:-1
+```
+
+- 版本边界：**6.1.138 / 139 / 140 没有这个检查，6.1.141 起才有**。所以之前把 6.1.145/6.1.176 的闪屏归因为“6.1.138 是显示上限”是过度结论；真正原因是这一个 stable 补丁。
+- 回退 `drm_atomic_check_valid_clones()` 及其调用后，6.1.176 显示正常，`COMMIT failed` / `drmModeAtomicCommit failed` 从每帧一条降到 0。用户实测视觉正常。
+
+### 双 BBR
+
+- 6.1.176 上同时编入 BBRv1（`bbr`）和 BBRv3（`bbr3`）。BBRv3 用独立的 `net/ipv4/tcp_bbr3.c`，注册名 `bbr3`；BBRv1 保留，只把 `min_tso_segs` 适配成新的 `tso_segs(sk, mss_now)` 回调。
+- 默认值改为：
+
+```
+CONFIG_DEFAULT_TCP_CONG="bbr3"
+CONFIG_DEFAULT_NET_SCH="fq"
+```
+
+- 真机结果：`tcp_available_congestion_control = reno bbr bbr3 cubic`，默认 `bbr3`，`default_qdisc=fq`；`bbr` / `bbr3` 都能切换，并各自跑通 HTTP 200。
+- 显示、audio、模块加载（501 个）、KSU root 都正常；`Failed to insmod=0`。
+
+### 代价与后续
+
+- BBRv3 改 `struct rate_sample` / `tcp_skb_cb` / `tcp_congestion_ops` 后，genksyms 会给约 691 个导出符号生成新 CRC，stock vendor 模块的 `__versions` 对不上。当前测试内核在 `check_version()` 里放行不匹配；这是**全局放宽**，后续应该收紧成按符号的 stock CRC 白名单，或用 `__GENKSYMS__` 把新字段对 genksyms 隐藏。
+- 下一步验证 ThinLTO（stock 也是 ThinLTO），目标是在 6.1.176 上替代 LTO_NONE；编译时间/内存峰值和实际性能会单独记录。
+- 细节、patch 和构建配置见 [`gki176/README.md`](../gki176/README.md) 和 [`BBRV3_PHONE_JOURNAL.md`](../bbrv3/docs/BBRV3_PHONE_JOURNAL.md) 第 20–21 节。
