@@ -22,6 +22,10 @@ Tested on Redmi K80 (zorn), HyperOS 3 / Android 16, kernel
   interfaces or another service resets sysctls.
 - WebUI shows the live values, configured values, daemon health, per-interface
   qdisc, and recent events. It also offers a one-tap reset to `bbr3 + fq`.
+- Live network monitor while the WebUI is open (1-second polling): up/down
+  rates and a 60-second sparkline, active route/IP, Wi-Fi or cellular signal,
+  TCP established/retransmit counters, qdisc drops/backlog, and an on-demand
+  TCP-connect latency test.
 - CLI for scripting and diagnostics.
 
 ## Install
@@ -30,7 +34,7 @@ Package the **contents** of this directory (not the directory itself) as a zip:
 
 ```sh
 cd bbr3-fq
-zip -r ../bbr3_fq-v1.3.zip . -x '*.DS_Store'
+zip -r ../bbr3_fq-v1.4.zip . -x '*.DS_Store'
 ```
 
 The zip must contain `module.prop` at its root. Install it in SukiSU Ultra /
@@ -81,8 +85,15 @@ su -c bbr3-fq restart             # restart the watchdog
 su -c bbr3-fq ccs                 # list available CC algorithms
 su -c bbr3-fq qdiscs              # list supported qdiscs
 su -c bbr3-fq ui-state            # JSON consumed by the WebUI
+su -c bbr3-fq net-state           # route/rates/TCP/qdisc snapshot JSON
+su -c bbr3-fq net-signal          # Wi-Fi + cellular signal JSON
+su -c bbr3-fq latency             # 3x TCP connect to www.baidu.com:443
 su -c bbr3-fq reset               # back to bbr3 + fq
 ```
+
+The latency test uses TCP connect (`nc -z`) rather than ICMP: many cellular
+networks drop ping, while a TCP handshake to `www.baidu.com:443` is a better
+indicator of usable path latency.
 
 Configuration:
 
@@ -105,6 +116,7 @@ and `fq`; the watchdog logs the fallback in
 | `service.sh` | 15-second watchdog: enforce CC/qdisc and attach the qdisc to interfaces |
 | `common.sh` | Config loading, validation, qdisc probing, apply helpers |
 | `bbr3-fq` | CLI and JSON state endpoint |
+| `net-state.sh` | Route/rate/TCP/qdisc/signal/latency snapshots for the WebUI |
 | `action.sh` | KernelSU action button -> `bbr3-fq status` |
 | `webroot/` | Module WebUI (`index.html`, `style.css`, `app.js`) |
 | `uninstall.sh` | Stops the watchdog and removes the CLI/config |

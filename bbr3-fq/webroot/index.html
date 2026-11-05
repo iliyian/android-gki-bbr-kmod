@@ -42,6 +42,14 @@
     <symbol id="i-zap" viewBox="0 0 24 24">
       <path d="M13 2.5 4 14h6l-1 7.5L19 10h-6Z"/>
     </symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24">
+      <path d="M12 5v14"/>
+      <path d="m5 12 7 7 7-7"/>
+    </symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24">
+      <path d="M12 19V5"/>
+      <path d="m5 12 7-7 7 7"/>
+    </symbol>
     <symbol id="i-info" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="9"/>
       <path d="M12 10.5V17"/>
@@ -133,6 +141,62 @@
             <p>接口重建后配置可能丢失，建议立即重启守护。</p>
           </div>
           <button class="text-btn" id="startDaemonBtn" type="button">重启守护</button>
+        </div>
+      </section>
+
+      <section class="card net-card" aria-labelledby="netHeading">
+        <div class="section-head">
+          <div>
+            <h2 id="netHeading">网络监测</h2>
+            <p id="netRouteLine">等待采样</p>
+          </div>
+          <button class="btn btn-mini" id="latencyBtn" type="button">
+            <svg aria-hidden="true"><use href="#i-activity"/></svg>
+            <span id="latencyBtnText">测延迟</span>
+          </button>
+        </div>
+
+        <div class="rate-grid">
+          <div class="rate-block">
+            <span class="rate-label">
+              <svg class="icon-down" aria-hidden="true"><use href="#i-arrow-down"/></svg>
+              下行
+            </span>
+            <span class="rate-line">
+              <span class="rate-value mono" id="rateDown">—</span>
+              <span class="rate-unit" id="rateDownUnit"></span>
+            </span>
+          </div>
+          <div class="rate-block">
+            <span class="rate-label">
+              <svg class="icon-up" aria-hidden="true"><use href="#i-arrow-up"/></svg>
+              上行
+            </span>
+            <span class="rate-line">
+              <span class="rate-value mono" id="rateUp">—</span>
+              <span class="rate-unit" id="rateUpUnit"></span>
+            </span>
+          </div>
+        </div>
+
+        <svg class="spark" viewBox="0 0 320 56" preserveAspectRatio="none" aria-hidden="true">
+          <path class="spark-grid" d="M0 14H320M0 28H320M0 42H320"/>
+          <polyline class="spark-line spark-down" id="sparkDown" points=""></polyline>
+          <polyline class="spark-line spark-up" id="sparkUp" points=""></polyline>
+        </svg>
+
+        <div class="net-detail">
+          <div class="net-detail-item"><span>网络</span><strong id="netType">—</strong></div>
+          <div class="net-detail-item"><span>信号</span><strong id="netSignal">—</strong></div>
+          <div class="net-detail-item"><span>默认路由</span><strong class="mono" id="netDev">—</strong></div>
+          <div class="net-detail-item"><span>延迟</span><strong id="netLatency" aria-live="polite">—</strong></div>
+        </div>
+
+        <div class="net-strip">
+          <span>TCP 连接 <b class="mono" id="tcpConns">—</b></span>
+          <span>重传 <b class="mono" id="tcpRetrans">—</b></span>
+          <span>丢弃/秒 <b class="mono" id="qdiscDrops">—</b></span>
+          <span>队列 <b class="mono" id="qdiscBacklog">—</b></span>
         </div>
       </section>
 

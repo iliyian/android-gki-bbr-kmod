@@ -11,7 +11,8 @@
 > 的闪屏。详见 [`gki176/README.md`](gki176/README.md)。
 >
 > **BBR3 + qdisc Control**：配套模块 [`bbr3-fq/`](bbr3-fq/) 提供 SukiSU WebUI，
-> 可在 `bbr3/bbr/cubic/reno` 与 `fq/fq_codel/codel/sfq/pfifo_fast/pfifo` 之间手动切换并持久化。
+> 可在 `bbr3/bbr/cubic/reno` 与 `fq/fq_codel/codel/sfq/pfifo_fast/pfifo` 之间手动切换并持久化；
+> 页面内还有 1 秒采样的实时网络监测（速率/信号/路由/TCP/qdisc/连接延迟）。
 >
 > 下面仍然保留 BBRv1 模块方案（不刷内核、不需要 vendor 源码）的完整说明。
 
@@ -163,11 +164,13 @@ wlan0 / rmnet_data* / rmnet_ipa0: qdisc fq
 - qdisc：`fq` / `fq_codel` / `codel` / `sfq` / `pfifo_fast` / `pfifo`
 - 选择写入 `/data/adb/bbr3_fq.conf`，`service.sh` 每 15 秒保持；接口重建后自动补挂 qdisc
 - WebUI 显示当前值、配置值、守护状态、每个受管接口的 qdisc 和最近事件
+- 内置实时网络监测：上下行速率与 60 秒曲线、Wi-Fi/蜂窝信号、默认路由/IP、
+  TCP 连接/重传、qdisc 丢弃/队列，以及按需 TCP 连接延迟测试
 - 安装、CLI 和注意事项见 [`bbr3-fq/README.md`](bbr3-fq/README.md)
 
 ```sh
 cd bbr3-fq
-zip -r ../bbr3_fq-v1.3.zip . -x '*.DS_Store'
+zip -r ../bbr3_fq-v1.4.zip . -x '*.DS_Store'
 # 在 SukiSU / KernelSU 中安装该 zip，重启
 ```
 

@@ -272,6 +272,9 @@ bbr3-fq - BBR3 + qdisc 模块状态/配置工具
   bbr3-fq ccs                 列出内核可用拥塞控制
   bbr3-fq qdiscs              列出内核可用队列规则
   bbr3-fq ui-state            WebUI 使用的 JSON 状态
+  bbr3-fq net-state           网络快照 JSON（路由/速率/TCP/qdisc）
+  bbr3-fq net-signal          信号快照 JSON（Wi-Fi/蜂窝）
+  bbr3-fq latency [host] [p]  TCP 连接延迟测试（默认 www.baidu.com 443）
   bbr3-fq clear               清空日志
   bbr3-fq help                显示本帮助
 EOF
@@ -327,6 +330,16 @@ case "$1" in
         ;;
     ui-state)
         ui_state
+        ;;
+    net-state)
+        exec /system/bin/sh "$MODDIR/net-state.sh"
+        ;;
+    net-signal)
+        exec /system/bin/sh "$MODDIR/net-state.sh" slow
+        ;;
+    latency)
+        shift
+        exec /system/bin/sh "$MODDIR/net-state.sh" latency "$@"
         ;;
     clear)
         : >"$LOG"

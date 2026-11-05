@@ -39,6 +39,20 @@
     toastTimer: 0,
     flashTimer: 0,
     polling: 0,
+    net: null,
+    netSlow: null,
+    netPrev: null,
+    netRates: { down: 0, up: 0 },
+    netRetransRate: null,
+    netDropsRate: 0,
+    sparkDown: new Array(60).fill(0),
+    sparkUp: new Array(60).fill(0),
+    netRefreshing: false,
+    signalRefreshing: false,
+    latency: null,
+    latencyBusy: false,
+    netTimer: 0,
+    signalTimer: 0,
   };
 
   const els = {};
@@ -101,6 +115,23 @@
     els.applySub = $('applySub');
     els.applyBtn = $('applyBtn');
     els.toast = $('toast');
+    els.latencyBtn = $('latencyBtn');
+    els.latencyBtnText = $('latencyBtnText');
+    els.netRouteLine = $('netRouteLine');
+    els.rateDown = $('rateDown');
+    els.rateDownUnit = $('rateDownUnit');
+    els.rateUp = $('rateUp');
+    els.rateUpUnit = $('rateUpUnit');
+    els.sparkDown = $('sparkDown');
+    els.sparkUp = $('sparkUp');
+    els.netType = $('netType');
+    els.netSignal = $('netSignal');
+    els.netDev = $('netDev');
+    els.netLatency = $('netLatency');
+    els.tcpConns = $('tcpConns');
+    els.tcpRetrans = $('tcpRetrans');
+    els.qdiscDrops = $('qdiscDrops');
+    els.qdiscBacklog = $('qdiscBacklog');
   }
 
   function bindEvents() {
@@ -140,13 +171,22 @@
       onOptionChange('qdisc', event);
     });
 
+    els.latencyBtn.addEventListener('click', function () {
+      measureLatency();
+    });
+
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden && hasBridge() && !state.applying) {
-        refresh({ silent: true });
+      if (!document.hidden) {
+        if (hasBridge() && !state.applying) refresh({ silent: true });
+        refreshNet();
+        refreshSignal();
       }
     });
 
-    window.addEventListener('pagehide', stopPolling);
+    window.addEventListener('pagehide', function () {
+      stopPolling();
+      stopNetPolling();
+    });
   }
 
   function loadModuleDir() {
@@ -206,13 +246,22 @@
     return bridgeExec(cmd);
   }
 
-  function parseState(output) {
+  function runNet(args) {
+    const cmd = 'sh ' + shellQuote(state.moduleDir + '/net-state.sh') + (args ? ' ' + args : '');
+    return bridgeExec(cmd);
+  }
+
+  function parseJsonObject(output) {
     const start = output.indexOf('{');
     const end = output.lastIndexOf('}');
     if (start < 0 || end <= start) {
-      throw new Error('模块没有返回状态 JSON');
+      throw new Error('没有返回 JSON');
     }
-    const data = JSON.parse(output.slice(start, end + 1));
+    return JSON.parse(output.slice(start, end + 1));
+  }
+
+  function parseState(output) {
+    const data = parseJsonObject(output);
     if (!data || !data.cc || !data.qdisc ||
         !Array.isArray(data.cc.available) || !Array.isArray(data.qdisc.available)) {
       throw new Error('状态 JSON 结构不完整');
@@ -515,6 +564,303 @@
       ? events.join('\n')
       : '（暂无变更事件）';
     els.eventCount.textContent = events.length ? events.length + ' 条' : '';
+  }
+
+  async function refreshNet() {
+    if (state.preview || state.netRefreshing) return;
+    state.netRefreshing = true;
+    try {
+      const result = await runNet('fast');
+      if (result.code !== 0) {
+        els.netRouteLine.textContent = '采样失败，稍后重试';
+        return;
+      }
+
+      let data;
+      try {
+        data = parseJsonObject(result.stdout);
+      } catch (error) {
+        els.netRouteLine.textContent = '采样数据异常';
+        return;
+      }
+
+      const iface = data.iface || {};
+      const tcp = data.tcp || {};
+      const now = Date.now();
+      const prev = state.netPrev;
+      const interval = prev ? now - prev.at : 0;
+      const same = !!prev && prev.dev === iface.name;
+
+      if (same && interval >= 250 && interval <= 5000) {
+        const dt = interval / 1000;
+        const down = Math.max(0, (iface.rx || 0) - prev.rx) * 8 / dt;
+        const up = Math.max(0, (iface.tx || 0) - prev.tx) * 8 / dt;
+        const retrans = Math.max(0, (tcp.retrans || 0) - prev.retrans);
+        const outsegs = (tcp.outsegs || 0) - prev.outsegs;
+        state.netRates.down = down;
+        state.netRates.up = up;
+        state.netRetransRate = outsegs > 0 ? (retrans / outsegs) * 100 : null;
+        state.netDropsRate = Math.max(0, (iface.drops || 0) - prev.drops) / dt;
+        pushSpark(down, up);
+      } else if (!same || interval > 5000) {
+        state.netRates.down = 0;
+        state.netRates.up = 0;
+        state.netRetransRate = null;
+        state.netDropsRate = 0;
+        pushSpark(0, 0);
+      }
+
+      state.netPrev = {
+        at: now,
+        dev: iface.name || '',
+        rx: iface.rx || 0,
+        tx: iface.tx || 0,
+        drops: iface.drops || 0,
+        retrans: tcp.retrans || 0,
+        outsegs: tcp.outsegs || 0,
+      };
+      state.net = data;
+      renderNet();
+    } finally {
+      state.netRefreshing = false;
+    }
+  }
+
+  async function refreshSignal() {
+    if (state.preview || state.signalRefreshing) return;
+    state.signalRefreshing = true;
+    try {
+      const result = await runNet('slow');
+      if (result.code !== 0) return;
+      try {
+        state.netSlow = parseJsonObject(result.stdout);
+      } catch (error) {
+        return;
+      }
+      renderNet();
+    } finally {
+      state.signalRefreshing = false;
+    }
+  }
+
+  function pushSpark(down, up) {
+    state.sparkDown.push(down / 1e6);
+    state.sparkDown.shift();
+    state.sparkUp.push(up / 1e6);
+    state.sparkUp.shift();
+  }
+
+  function formatRate(bits) {
+    if (!isFinite(bits) || bits <= 0) return { value: '0', unit: 'bps' };
+    if (bits < 1000) return { value: String(Math.round(bits)), unit: 'bps' };
+    if (bits < 1e6) return { value: (bits / 1e3).toFixed(bits < 1e4 ? 1 : 0), unit: 'Kbps' };
+    if (bits < 1e9) return { value: (bits / 1e6).toFixed(bits < 1e8 ? 1 : 0), unit: 'Mbps' };
+    return { value: (bits / 1e9).toFixed(2), unit: 'Gbps' };
+  }
+
+  function formatBytes(bytes) {
+    const value = bytes || 0;
+    if (value < 1024) return value + ' B';
+    if (value < 1048576) return (value / 1024).toFixed(1) + ' KB';
+    return (value / 1048576).toFixed(1) + ' MB';
+  }
+
+  function techLabel(tech) {
+    if (!tech) return '';
+    const value = String(tech).toUpperCase();
+    if (value.indexOf('NR') === 0) return '5G';
+    if (value.indexOf('LTE') >= 0) return '4G';
+    if (value.indexOf('HSPA') >= 0 || value.indexOf('UMTS') >= 0 || value.indexOf('EVDO') >= 0) return '3G';
+    if (value.indexOf('EDGE') >= 0 || value.indexOf('GPRS') >= 0 ||
+        value.indexOf('GSM') >= 0 || value.indexOf('CDMA') >= 0) return '2G';
+    return tech;
+  }
+
+  function networkLabel(dev, slow) {
+    if (!dev) return '未连接';
+    const cell = (slow && slow.cell) || {};
+    const wifi = (slow && slow.wifi) || {};
+    const tech = techLabel(cell.tech);
+
+    if (dev.indexOf('wlan') === 0) {
+      return wifi.ssid ? 'Wi-Fi · ' + wifi.ssid : 'Wi-Fi';
+    }
+    if (dev.indexOf('rmnet') === 0) {
+      const parts = [];
+      if (tech) parts.push(tech);
+      if (cell.operator) parts.push(cell.operator);
+      return parts.length ? parts.join(' · ') : '蜂窝';
+    }
+    if (dev.indexOf('utun') === 0 || dev.indexOf('tun') === 0) {
+      return tech ? 'VPN · ' + tech : 'VPN';
+    }
+    return '其他';
+  }
+
+  function signalLabel(dev, slow) {
+    const cell = (slow && slow.cell) || {};
+    const wifi = (slow && slow.wifi) || {};
+    if (dev && dev.indexOf('wlan') === 0 && wifi.rssi != null) {
+      return 'RSSI ' + wifi.rssi + ' dBm';
+    }
+    if (cell.rsrp != null) return 'RSRP ' + cell.rsrp + ' dBm';
+    if (wifi.rssi != null) return 'RSSI ' + wifi.rssi + ' dBm';
+    return '—';
+  }
+
+  function signalTitle(slow) {
+    const cell = (slow && slow.cell) || {};
+    const wifi = (slow && slow.wifi) || {};
+    const parts = [];
+    if (cell.operator) parts.push(cell.operator);
+    if (cell.tech) parts.push(cell.tech);
+    if (cell.rsrp != null) parts.push('RSRP ' + cell.rsrp);
+    if (cell.rsrq != null) parts.push('RSRQ ' + cell.rsrq);
+    if (cell.sinr != null) parts.push('SINR ' + cell.sinr);
+    if (wifi.ssid) parts.push('SSID ' + wifi.ssid);
+    if (wifi.link != null) parts.push(wifi.link + ' Mbps');
+    return parts.join(' · ');
+  }
+
+  function renderSpark() {
+    const width = 320;
+    const height = 56;
+    const pad = 4;
+    let max = 0;
+    const arrays = [state.sparkDown, state.sparkUp];
+    for (let a = 0; a < arrays.length; a++) {
+      for (let i = 0; i < arrays[a].length; i++) {
+        if (arrays[a][i] > max) max = arrays[a][i];
+      }
+    }
+    max = Math.max(max * 1.15, 0.1);
+
+    function points(values) {
+      return values.map(function (value, index) {
+        const x = (index / (values.length - 1)) * width;
+        const y = height - pad - (Math.min(value, max) / max) * (height - 2 * pad);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+    }
+
+    els.sparkDown.setAttribute('points', points(state.sparkDown));
+    els.sparkUp.setAttribute('points', points(state.sparkUp));
+  }
+
+  function renderNet() {
+    const net = state.net;
+    if (!net) {
+      els.netRouteLine.textContent = '等待采样…';
+      return;
+    }
+
+    const route = net.route || {};
+    const iface = net.iface || {};
+    const tcp = net.tcp || {};
+    const slow = state.netSlow || {};
+
+    els.netRouteLine.textContent = route.dev
+      ? route.dev + (route.src ? ' · ' + route.src : '') + ' · 1 秒采样'
+      : '未连接 · 1 秒采样';
+    els.netDev.textContent = route.dev || '—';
+
+    const down = formatRate(state.netRates.down);
+    const up = formatRate(state.netRates.up);
+    els.rateDown.textContent = down.value;
+    els.rateDownUnit.textContent = down.unit;
+    els.rateUp.textContent = up.value;
+    els.rateUpUnit.textContent = up.unit;
+
+    els.netType.textContent = networkLabel(route.dev, slow);
+    els.netSignal.textContent = signalLabel(route.dev, slow);
+    els.netSignal.title = signalTitle(slow);
+
+    if (state.latency && state.latency.ok) {
+      const latency = state.latency.avg != null ? state.latency.avg : state.latency.ms;
+      els.netLatency.textContent = latency != null ? latency + ' ms' : '—';
+    } else if (state.latency) {
+      els.netLatency.textContent = '超时';
+    } else {
+      els.netLatency.textContent = '—';
+    }
+
+    els.tcpConns.textContent = String(tcp.estab || 0);
+    els.tcpRetrans.textContent = state.netRetransRate == null
+      ? '—'
+      : state.netRetransRate.toFixed(2) + '%';
+    els.qdiscDrops.textContent = String(Math.round(state.netDropsRate || 0));
+    els.qdiscBacklog.textContent = formatBytes(iface.backlog_b || 0);
+
+    renderSpark();
+  }
+
+  async function measureLatency() {
+    if (state.latencyBusy) return;
+    state.latencyBusy = true;
+    els.latencyBtn.disabled = true;
+    els.latencyBtnText.textContent = '测速中';
+
+    let result;
+    if (state.preview) {
+      result = {
+        code: 0,
+        stdout: '{"ok":true,"host":"www.baidu.com","port":443,"ms":42,"avg":45,"loss":0}',
+        stderr: '',
+      };
+    } else {
+      result = await runNet('latency');
+    }
+
+    state.latencyBusy = false;
+    els.latencyBtn.disabled = false;
+    els.latencyBtnText.textContent = '测延迟';
+
+    let parsed = null;
+    if (result.stdout) {
+      try {
+        parsed = parseJsonObject(result.stdout);
+      } catch (error) {
+        parsed = null;
+      }
+    }
+
+    if (parsed) {
+      state.latency = parsed;
+      if (parsed.ok) {
+        const latency = parsed.avg != null ? parsed.avg : parsed.ms;
+        showToast('TCP 延迟 ' + latency + ' ms');
+      } else {
+        showToast('TCP 连接超时', 'warn');
+      }
+    } else {
+      state.latency = null;
+      showToast('延迟测试失败', 'warn');
+    }
+    renderNet();
+  }
+
+  function startNetPolling() {
+    stopNetPolling();
+    if (state.preview) return;
+    refreshNet();
+    refreshSignal();
+    state.netTimer = window.setInterval(function () {
+      if (!document.hidden && !state.applying) refreshNet();
+    }, 1000);
+    state.signalTimer = window.setInterval(function () {
+      if (!document.hidden) refreshSignal();
+    }, 10000);
+  }
+
+  function stopNetPolling() {
+    if (state.netTimer) {
+      window.clearInterval(state.netTimer);
+      state.netTimer = 0;
+    }
+    if (state.signalTimer) {
+      window.clearInterval(state.signalTimer);
+      state.signalTimer = 0;
+    }
   }
 
   function updateDirty() {
@@ -846,7 +1192,36 @@
     };
     state.pending.cc = 'bbr3';
     state.pending.qdisc = 'fq';
+
+    state.net = {
+      ts: Math.floor(Date.now() / 1000),
+      route: { dev: 'rmnet_data3', src: '100.70.20.60', via: '100.70.20.61' },
+      iface: {
+        name: 'rmnet_data3', state: 'up', rx: 413217120, tx: 281639698,
+        qdisc: 'fq', drops: 0, backlog_b: 0, backlog_p: 0, requeues: 0,
+      },
+      tcp: { total: 71, estab: 57, timewait: 5, retrans: 12476, outsegs: 1650738 },
+    };
+    state.netSlow = {
+      wifi: { enabled: false, ssid: '', rssi: null, link: null },
+      cell: {
+        state: 'IN_SERVICE', tech: 'NR_SA', operator: '中国联通',
+        rsrp: -102, rsrq: -11, sinr: 10, level: 1,
+      },
+    };
+    state.netRates = { down: 12.4e6, up: 1.6e6 };
+    state.netRetransRate = 0.03;
+    state.netDropsRate = 0;
+    state.sparkDown = Array.from({ length: 60 }, function (_, i) {
+      return 5 + Math.sin(i / 5) * 3 + (i % 7) * 0.25;
+    });
+    state.sparkUp = Array.from({ length: 60 }, function (_, i) {
+      return 1.2 + Math.sin(i / 4) * 0.6;
+    });
+    state.latency = { ok: true, avg: 45, ms: 42 };
+
     render();
+    renderNet();
   }
 
   async function init() {
@@ -870,6 +1245,7 @@
     els.daemonPillText.textContent = '读取中';
     await refresh({ silent: false });
     startPolling();
+    startNetPolling();
   }
 
   if (document.readyState === 'loading') {
