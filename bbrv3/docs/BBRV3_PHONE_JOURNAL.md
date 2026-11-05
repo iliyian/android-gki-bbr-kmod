@@ -23,6 +23,7 @@
 10. **2026-11-04 BBRv3 移植成功**：以 Google `google/bbr` v3（6.13.7）为唯一参考，自研回移到 ACK 6.1.138；`bbr3` 注册成功、可切换，开机/音频/模块加载正常。核心障碍不是算法，而是 genksyms CRC 误伤导致 vendor 模块拒绝加载；已用 `check_version()` 放行解决。详见第 19 节。
 11. **2026-11-05 6.1.176 显示闪屏根因定位**：纯 ACK 6.1.176 能开机，模块/audio/root 正常，但显示持续闪屏。根因是 stable **6.1.141** 引入的 `drm_atomic_check_valid_clones()`（上游 `41b4b11da0215`）与 zorn vendor `msm_drm.ko`（6.1.68 编）的 DSI+Virtual encoder `possible_clones` 不兼容：`drm_atomic_check_only()` 对 CRTC 203 返回 `-EINVAL`，HWC 每帧重试失败。回退该检查后 6.1.176 显示恢复正常，用户确认视觉正常。详见第 20 节。
 12. **2026-11-05 6.1.176 双 BBR + 默认 bbr3/fq**：在同一 6.1.176 基线上同时编入 BBRv1（`bbr`）和 BBRv3（`bbr3`），默认 `CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`。真机验证 `tcp_available=reno bbr bbr3 cubic`、默认 `bbr3`、`default_qdisc=fq`；`bbr`/`bbr3` 均可切换并实际跑通 HTTP；模块/audio/root/显示正常。详见第 21 节。
+13. **2026-11-05 6.1.176 ThinLTO**：ThinLTO 构建并刷入验证，`-j8` 构建 24:44.91，cgroup 峰值 6.38 GB，无 OOM；`vmlinux.symvers` 与 LTO_NONE 全量 diff 为 0，模块 ABI 不变。开机/显示/audio/模块/BBR 正常，`boot_progress_enable_screen` 单次 15871 ms（LTO_NONE 基线 16022 ms），性能 A/B 未完成。详见第 22 节。
 
 ---
 
@@ -1042,11 +1043,11 @@ dmesg | grep "pineapple-mtp-snd-card"     # 6.529s 声卡注册
 - 旧 `tcp_bbr.ko`（BBRv1）不能在这个内核上加载；如需 A/B，需要把官方 `tcp_bbr1.c` 一起编进来。
 - ECN/PLB 被裁掉；在本机（无 `RTAX_FEATURE_ECN_LOW`）它们本来就是死代码，但严格说不是“完整 ECN 版 BBRv3”。
 - 当前是 **2025-03 版** BBRv3；2026-09 版有行为更新（DRAIN gain、undo state 等），尚未移植。
-- 尚未做真实吞吐/延迟测试、长时间稳定性测试、实际放音验证。
+- 实际吞吐/延迟已有两组数据：2026-11-02 的 BBRv1 vs cubic（联通 5G，三台服务器），以及 2026-11-04/05 的 BBRv3 vs cubic（电信 LTE）；链接见 §21.6。长时间稳定性、6.1.176 上的实际放音、相机/指纹回归仍未完成。
 
 ### 19.10 下一步
 
-1. 实际流量测试：`bbr3` vs `cubic` 下载/上传对比，观察 `ss -tin`/内核告警；
+1. 实际流量测试：`bbr3` vs `cubic` 已完成一轮（2026-11-04/05，电信 LTE），`bbr` vs `cubic` 也有 2026-11-02 的联通 5G 数据；严格同内核的 `bbr3` vs `bbr` A/B 仍未做。数据见 §21.6 与 `docs/bench/`。
 2. 验证音频实际放音、相机/指纹/WiFi 回归；
 3. 视需要把算法换成 2026-09 `tcp_bbr3.c`（需要适配 `cwnd_event_tx_start` 等 7.1 API）；
 4. 自定义注册名：`.name` 是普通字符串，`TCP_CA_NAME_MAX=16`，改成 `iliyian` 只需改一行并重编；若要把 BBRv1 也保留，可加入 `tcp_bbr1.c` 并以 `bbr` 注册。
@@ -1223,7 +1224,7 @@ if (ret != 0)
 | root | KSU LKM，`u:r:ksu:s0` |
 | 显示 atomic 失败 | `COMMIT failed=0`、`drmModeAtomicCommit failed=0`（唤醒+滑动复测） |
 | 实际流量 | `curl https://www.baidu.com` 在 `bbr3` 和 `bbr` 下均返回 HTTP 200；`ss -tin` 分别显示 `bbr3` / `bbr` |
-| 视觉 | 沿用第 20 节的显示回退，日志层面无 atomic 失败；视觉待用户复核 |
+| 视觉 | 沿用第 20 节的显示回退；日志层面无 atomic 失败，用户刷入后已确认视觉正常 |
 
 ### 21.4 产物与路径
 
@@ -1247,6 +1248,102 @@ if (ret != 0)
 - 双 BBR 本身不改 `tcp_sock` 布局；`rate_sample` / `tcp_skb_cb` 的变化与第 19 节一致。
 - 模块 CRC 全局放行、`MODULE_SIG_PROTECT=n` 的安全取舍见第 19.9 / 20.7 节；不是后门，但属于有意的兼容性放宽。
 - 待办：
-  1. `bbr3` vs `bbr` vs `cubic` 的实际吞吐/延迟 A/B（`iperf3`、`ss -tin`、弱网/5G）；
-  2. 长稳、发热、WiFi/相机/指纹/实际放音回归；
+  1. 吞吐/延迟：已完成 BBRv1 vs cubic（2026-11-02）和 BBRv3 vs cubic（2026-11-04/05）两组；严格同内核的 `bbr3` vs `bbr` A/B 仍未做。
+  2. 长稳、发热、WiFi/相机/指纹、6.1.176 上的实际放音回归；
   3. 视需要移植 2026-09 版 `tcp_bbr3.c`（需要适配 `cwnd_event_tx_start` 等 7.1 API）。
+  4. ThinLTO 已完成构建和首轮真机验证，见第 22 节；性能 A/B 待补。
+
+### 21.6 网络基准补充（来自 docs/bench 与 blog）
+
+**BBRv1 vs cubic（2026-11-02，联通 5G，三台服务器）**
+
+- 下载方向没有可复现差异：netcup 31.50 vs 30.45 Mbps（配对中位 -0.7%）；日本约 42.2 vs 42.2 Mbps（几何 +2.1%）；北京正常信号 24.59 vs 24.59 Mbps（逐对 -57% 到 +29%，方向不稳）；晚高峰 20.45 vs 22.75 Mbps（+2.2%，逐对 -54% 到 +236%）。手机是接收端，CC 在服务端，客户端换 CC 只影响 ACK。
+- 上传方向手机端 CC 真正生效：netcup 4.97 vs 3.52 Mbps；日本 6.92 vs 6.97 Mbps；北京正常 5.46 vs 4.40 Mbps（BBR 低约 15%）；晚高峰 1.66 vs 1.10 Mbps（BBR 低约 12%）。
+- 队列相反：北京正常发送侧 RTT 804 → 193 ms，上传压载 ping p95 237 → 64 ms；晚高峰 CUBIC RTT 3.98 s / 重传 4.09%，BBR 321 ms / 0.99%；日本 RTT 443–683 → 190–214 ms；netcup 866 → 670 ms。
+- 报告：`docs/bench/2026-11-02-bbr-vs-cubic.md`，逐轮 CSV 和逐采样数据在同目录。
+
+**BBRv3 vs cubic（2026-11-04/05，电信 LTE）**
+
+- 下载中位 28.9 vs 32.8 Mbps（+15.8%），但有一轮 cubic 只有 14.8 Mbps；剔除后配对中位只剩 +2.9%，方向不稳。
+- 上传中位 2.41 vs 2.07 Mbps，几何平均 -4.8%，2/4 胜；没有可复现的吞吐收益。
+- 队列指标 4/4 完全分离：上传 RTT 1.5 s → 0.2 s，p95 2.7 s → 0.4 s，cwnd ~780 → 56 段；p95 采样里 cubic 1.9–4.8 s，bbr3 0.30–0.42 s（首轮除外）。
+- 详细表格、统计检验和测量坑见 blog.md 的“BBRv3 实测：延迟有收益，吞吐没有”一节；原始 harness/数据在本地 `bbr-bench-2026-11-04/`。
+
+---
+
+## 22. 2026-11-05：6.1.176 ThinLTO 构建与首轮验证
+
+### 22.1 目标与配置
+
+stock zorn 内核用 ThinLTO；这一节验证同一 6.1.176 + 双 BBR + 显示修复的树能否用 ThinLTO 替代 LTO_NONE，并记录构建成本。
+
+- 源码：`/root/ack176-shallow`，commit `904cfac56`（含 valid-clones revert、BBRv3 core、双 BBR、libbpf cast）。
+- 配置：`CONFIG_LTO_CLANG_THIN=y`、`# CONFIG_LTO_NONE is not set`、`CONFIG_LTO_CLANG_FULL` 关闭；`CONFIG_CFI_CLANG=y`、`CONFIG_MODVERSIONS=y`、`CONFIG_MODULE_SIG_PROTECT=n`；`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`。
+- 工具链：Ubuntu clang 17.0.6（ACK 官方 pin 是 AOSP `r487747c` / 17.0.2）。
+- 构建脚本：`/root/build176_thinlto.sh`；输出目录 `/root/gki176-thinlto`；`make -j8 Image`。
+- 内存统计：cgroup v2 `/sys/fs/cgroup/gki-thinlto` 的 `memory.peak` / `memory.swap.peak`。
+
+### 22.2 构建数据
+
+| 项 | 结果 |
+|---|---|
+| wall time | **24:44.91** |
+| user / sys | 9358.30 s / 1004.97 s |
+| CPU 占用 | 697% |
+| `time -v` max RSS | 6,124,300 KiB（约 5.84 GiB） |
+| cgroup `memory.peak` | 6,381,436,928 B（约 5.94 GiB） |
+| `memory.swap.peak` | 1,368,064 B（约 1.3 MiB） |
+| `memory.events` | `oom=0`、`oom_kill=0` |
+| Image | 36,760,064 B，SHA256 `59fdfaabfb4bb94239a3b2d1b851be3bcb6bc75a105d83d8296528c34514d559` |
+
+对比 LTO_NONE：Image 35,645,952 B → 36,760,064 B，增加 1,114,112 B（约 3.1%）。LTO_NONE 那次没有精确的 `time`/峰值记录，不能拿来直接比构建耗时。
+
+### 22.3 ABI 一致性
+
+`/root/gki176-noprot/vmlinux.symvers` 与 `/root/gki176-thinlto/vmlinux.symvers` 全量 diff（去掉注释行后排序）为 **0 行**：
+
+```
+module_layout  0xea759d7f  （两边一致）
+skb_put        0x385a34f9  （两边一致）
+__alloc_skb    0x3a1c9278  （两边一致）
+```
+
+结论：ThinLTO 只改代码生成，不改 genksyms 计算的符号 CRC；模块 ABI 与 LTO_NONE 相同，stock vendor 模块的加载路径不需要额外变化。
+
+### 22.4 真机验证
+
+| 项 | 结果 |
+|---|---|
+| `uname -r` | `6.1.176-android14-11+` |
+| `/proc/config.gz` | `CONFIG_LTO_CLANG_THIN=y`、`CONFIG_CFI_CLANG=y` |
+| `sys.boot_completed` | 1 |
+| 模块数 / `Failed to insmod` | 501 / 0 |
+| `tcp_available_congestion_control` | `reno bbr bbr3 cubic` |
+| `tcp_congestion_control` | `bbr3` |
+| `net.core.default_qdisc` | `fq` |
+| 声卡 | `pineapple-mtp-snd-card` 正常 |
+| root | KSU LKM，`u:r:ksu:s0` |
+| 显示 | `COMMIT failed=0`、`drmModeAtomicCommit failed=0`（唤醒+滑动复测） |
+
+开机进度（单次样本）：
+
+| 指标 | LTO_NONE 基线 | ThinLTO |
+|---|---:|---:|
+| `boot_progress_enable_screen` | 16022 ms | 15871 ms |
+| `sf_stop_bootanim` | 17730 ms | 17447 ms |
+
+分别约 -0.9% 和 -1.6%，但只有单次样本，且系统刚刷完、后台任务不同；不能据此认为 ThinLTO 有稳定性能收益。CPU/存储/UI 的 A/B 还没做。
+
+### 22.5 产物与发布
+
+- boot：`/root/gki176-thinlto-boot.img`，SHA256 `6637585575048818a2276dd68796ed09094536e013bf2ebcc122517d8221a02b`（由 stock boot repack，`RAMDISK_SZ=0`、`CMDLINE` 空）。
+- 本地：`dl/gki176-thinlto-boot.img`；Image 在 `release-v0.2.0/Image-6.1.176-ThinLTO`（服务器 `/root/gki176-thinlto/arch/arm64/boot/Image`）。
+- GitHub release：`v0.2.0-6.1.176`，包含 LTO_NONE/ThinLTO 两个 boot、两个 Image 和 `SHA256SUMS`：
+  <https://github.com/iliyian/k80-zorn-bbr/releases/tag/v0.2.0-6.1.176>
+
+### 22.6 判断
+
+- ThinLTO 的构建成本可接受：10 核 15 GiB + 8 GiB swap 上 `-j8` 约 25 分钟，峰值约 6 GiB，没有触发 OOM。
+- ABI 和模块加载没有问题，显示/audio/BBR 回归正常。
+- 性能收益目前只有一次开机样本的 ~1%，量级和“ThinLTO 通常 1%–5%”的预期一致，但还不足以定论；下一步需要多轮开机、`simpleperf`、存储和 UI 的 A/B，或者再考虑 PGO/AutoFDO。
+- 如果后续没有稳定收益，保留 LTO_NONE 作为默认、ThinLTO 作为“和 stock 同款”的可选变体更稳妥。

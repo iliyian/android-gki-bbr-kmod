@@ -619,5 +619,253 @@ CONFIG_DEFAULT_NET_SCH="fq"
 ### 代价与后续
 
 - BBRv3 改 `struct rate_sample` / `tcp_skb_cb` / `tcp_congestion_ops` 后，genksyms 会给约 691 个导出符号生成新 CRC，stock vendor 模块的 `__versions` 对不上。当前测试内核在 `check_version()` 里放行不匹配；这是**全局放宽**，后续应该收紧成按符号的 stock CRC 白名单，或用 `__GENKSYMS__` 把新字段对 genksyms 隐藏。
-- 下一步验证 ThinLTO（stock 也是 ThinLTO），目标是在 6.1.176 上替代 LTO_NONE；编译时间/内存峰值和实际性能会单独记录。
+- ThinLTO 已完成构建和首轮真机验证：`-j8` 24:44.91，cgroup 峰值 6.38 GB，`vmlinux.symvers` 与 LTO_NONE 全量一致；开机/显示/audio/模块/BBR 正常，单次开机快约 1%，性能 A/B 待补。详见附录 A.7。
 - 细节、patch 和构建配置见 [`gki176/README.md`](../gki176/README.md) 和 [`BBRV3_PHONE_JOURNAL.md`](../bbrv3/docs/BBRV3_PHONE_JOURNAL.md) 第 20–21 节。
+
+---
+
+## 附录 A：完整实验记录
+
+正文讲“怎么用”和“测到什么”，这一节把 journal 里的失败路径、构建数据和实现细节整理进来。时间线从 2026-11-01 到 11-05，设备始终是 zorn。
+
+### A.1 设备与约束
+
+- 设备：Redmi K80（`zorn` / `24117RK2CC`），HyperOS `OS3.0.309.0.WOKCNXM` / Android 16。
+- stock 内核：`6.1.138-android14-11-g965475777129-mi`，KMI `android14-6.1`，A/B，bootloader 已解锁。
+- vendor 模块版本不一致：`/vendor/lib/modules` 里 `msm_drm.ko` 的 vermagic 是 `6.1.68-android14-11-gef5271fe2aef-dirty`；`/system_dlkm/lib/modules` 是 6.1.138。两者都属于 android14-6.1 KMI，所以能跨 sublevel 加载；换成 6.6/6.12 就不行。
+- root：SukiSU Ultra 4.3.0 LKM，patch `init_boot_a`；`boot_a` 原厂。
+- 该 bootloader **忽略 `fastboot boot`**，只能 `fastboot flash boot_a`；ramoops 每次启动被清，pstore 拿不到崩溃日志。
+
+### A.2 早期路线：直接刷通用/第三方内核
+
+| 内核 | 结果 | 关键数据 |
+|---|---|---|
+| Droidspaces 6.1.176（nbkernel / non-nbkernel） | 能启动，持续闪屏 | 736 / 757 条 `COMMIT failed: 11`、`presentFence:-1`；直接刷 zip 也是同一内核 |
+| ShirkNeko 6.1.124 | 可日常使用 | `6.1.124-android14-11`，`boot_completed=1`；早期 363 条 `COMMIT failed` 后恢复；WiFi SSID `40`，11ax/1200Mbps/WPA3-SAE；相机 8 个 device；指纹 HAL alive，4 枚；audio HAL/设备正常（未实际放音）；内置 KSU `v4.1.3`，`adb shell` 是 uid 2000 |
+| ShirkNeko 6.1.145 | 能开机、audio 正常，显示不可用 | 1127 条 `COMMIT failed`/`presentFence`，持续闪屏 |
+| Shirk 6.1.138 自编 | 卡 Redmi logo | 编译成功，AOSP clang r487747c/ThinLTO；`fs/namespace.c` 有 hunk 失败，pstore 为空；后来确认这个 hunk 不是根因 |
+| Google GKI 6.1.124 | 显示正常，audio 失败 | 442 个模块；54 条 `Failed to insmod ... Permission denied`；`/dev/snd` 只有 `timer`；`/proc/asound/cards` 为空；`va-macro not registered yet, defer` 10 次；`boot_completed` 为空 |
+| Google GKI 6.1.134 | 下载了，未做启动测试 | 仅作为对照 |
+| Google GKI 6.1.138 + `MODULE_SIG_PROTECT=n` | 成功基线 | 501 个模块；声卡 `pineapple-mtp-snd-card` 6.536 s 注册；`va-macro defer` 0 次；显示/audio/WiFi/5G/相机/指纹/KSU root/BBR 正常；用户实测放音正常 |
+
+几个被排除的源/预编译：
+
+- **Allay-OS**：`android_kernel_xiaomi_sm8650`，6.1.138、`lineage-23.2`、zorn/POCO F7 Pro，14 个 commit，约 2.0 GB；有 audio/display/vendor 模块，但没有 zorn DTS，也不是可直接 build 的整机树。
+- **小米 6.1.68 OSS**：`MiCode/Xiaomi_Kernel_OpenSource` 的 `bsp-zorn-v-oss`，基于高通 `LA.VENDOR.14.3.0.r1`；`arch/arm64/boot/dts/vendor` 是坏符号链接，`techpack/audio` 不在公开 repo；只能当参考/供体。
+- **Sakura 预编译**：`Sakura-Devices/device_xiaomi_zorn-kernel` 的 kernel 实际是 `6.1.118-android14-11`，不是 6.1.138；可做 DTB/vendor 模块参考，不是同版本基线。
+- **WildKernels**：通用 GKI 6.1.157 等，不支持 zorn 的 vendor 显示栈。
+- **KyuharuTE/Droidspaces-Kernel-For-K80**：release 的 `Image` SHA 就是上面实测闪屏的两个 build；repo README 也写明未做真机验证。
+
+结论：通用/第三方内核不是“版本号新就行”，决定能不能用的是 vendor 显示栈和模块保护；6.1.138 当时能跑，并不代表 6.1.145+ 一定不行。后来的 6.1.176 实验证明了这一点。
+
+### A.3 audio 卡死的真正原因：GKI module protection
+
+Google GKI 6.1.124 的失败点不是 config，也不是 SELinux：
+
+- dmesg 有 54 条 `Failed to insmod '/system_dlkm/.../xxx.ko': Permission denied`；
+- 没有 `avc: denied { module_load }`；
+- `setenforce 0` 后仍是 EACCES；
+- 启动参数 `androidboot.selinux=permissive` 被 user build 的 init 强制回 Enforcing（`CONFIG_SECURITY_SELINUX_BOOTPARAM` 没开）；
+- `modules_disabled=0`，没有 lockdown，没有 `sig_enforce`。
+
+机制在 android14-6.1 的 `kernel/module/main.c`：
+
+```c
+if (!mod->sig_ok && gki_is_module_protected_export(kernel_symbol_name(s))) {
+    pr_err("%s: exports protected symbol %s\n", mod->name, ...);
+    return -EACCES;
+}
+```
+
+- Google certified GKI 带完整的 KMI protected-export 表，`CONFIG_MODULE_SIG_PROTECT=y`；
+- zorn 的 stock 模块是 6.1.138 编的，在 6.1.124 GKI 上 `sig_ok=false`，又导出了受保护符号，直接 `-EACCES`；
+- Shirk 的 standalone ACK 构建没有生成保护表（`NR_UNPROTECTED_SYMBOLS == 0`），同样的模块全部加载成功；
+- 模块加载失败改变了 probe 顺序：GKI 上 `pineapple-asoc-snd` 反复 `va-macro not registered yet, defer`，声卡永远不出现；Shirk 上 0 次 defer，6.455 s 注册声卡。
+
+所以 6.1.138 的成功基线是 `gki_defconfig` + `CONFIG_MODULE_SIG_PROTECT=n`，不是“补 audio config”。这个结论在第 18 节修正了第 8.5 节的旧判断。
+
+### A.4 BBRv3 为什么不能做模块
+
+BBRv3 不是单个 `tcp_bbr.c`，它依赖核心 TCP 栈的新字段和调用点，模块改不了：
+
+| 依赖 | 作用 |
+|---|---|
+| `rate_sample.prior_lost / tx_in_flight / lost / is_acking_tlp_retrans_seq / is_ece` | inflight/loss 模型 |
+| `tcp_skb_cb.tx.in_flight / lost`，`first_tx_mstamp/delivered_mstamp` u64→u32 | 每个 skb 的在途/丢包快照 |
+| `ca_ops.skb_marked_lost` | 核心标记 skb 丢失时回调 CA |
+| `CA_EVENT_TLP_RECOVERY` | TLP 探针救回时通知 |
+| `ca_ops.tso_segs(sk, mss_now)` | BBRv3 的 TSO/GSO 预算 |
+| `fast_ack_mode`、`tlp_orig_data_app_limited` | 接收端快速 ACK、TLP app-limited 快照 |
+
+实际试过把官方 v3 `tcp_bbr.c` 放进模块环境，报错包括：
+
+```
+use of undeclared identifier 'CA_EVENT_TLP_RECOVERY'
+no member named 'lost' in 'struct rate_sample'
+no member named 'tx_in_flight' in 'struct rate_sample'
+no member named 'is_acking_tlp_retrans_seq' in 'struct rate_sample'
+```
+
+`ksud` 能解决“符号没导出”，解决不了“结构体没字段/核心不填/核心不调用”。
+
+最终 core patch 改了 9 个文件：`include/linux/tcp.h`、`include/net/tcp.h`、`include/uapi/linux/inet_diag.h`、`net/ipv4/tcp.c`、`tcp_cong.c`、`tcp_input.c`、`tcp_output.c`、`tcp_rate.c`、`tcp_timer.c`。算法文件适配上做了四类改动：
+
+1. 删除 `__bpf_kfunc` / BTF kfunc 注册；
+2. 删除 PLB 和 `ecn_low` 路径（本机没有 `RTAX_FEATURE_ECN_LOW`，是死代码）；
+3. `cong_control` 适配 6.1 的 `(sk, rs)` 签名；
+4. 状态从内联改为动态分配，注册名 `bbr3`。
+
+动态状态的原因：去掉 PLB 后 `struct bbr` 仍是 144 字节，6.1 的 `ICSK_CA_PRIV_SIZE` 只有 104；不能加大 `icsk_ca_priv`，否则 `tcp_sock` 所有字段平移 40 字节，vendor 模块 ABI 全坏。做法是 `icsk_ca_priv` 放 `{state, owner, magic}` 指针头，状态 `kmalloc`，`.release` 释放，`owner` 防止 accept 克隆共享。
+
+静态验证：
+
+- BTF 对比：`tcp_sock` 2368 字节不变，所有既有字段偏移一致；`inet_connection_sock` 1536 字节不变；`rate_sample` 72→88，`tcp_congestion_ops` 192→192，`tcp_skb_cb` 48→44（tx 区不变，union 对齐从 8 降到 4）。
+- QEMU aarch64 virt：core-only 内核 4.3 秒启动到 `VFS: Unable to mount root fs`，没有 panic/BUG。
+
+最大坑是 **genksyms CRC 误伤**：
+
+- 头文件改动让 691 个导出符号生成了新 CRC，包括 `skb_put`、`__alloc_skb` 这种 ABI 没变的；
+- `audio_pkt_dlkm.ko` 的 `__versions` 期望 `skb_put=0xac7a3881`，新内核是 `0x385a34f9`；
+- `check_version()` 不匹配返回 0，调用方 `-EINVAL`，audio 模块不加载 → AudioService/HAL 卡死 → 开机循环；
+- 不能直接关 `CONFIG_MODVERSIONS`：vermagic 会少 `modversions` 标记，`same_magic()` 比较第一个空格之后的内容，模块会报 version magic 不匹配；
+- 最终保留 `MODVERSIONS=y`，把 `kernel/module/version.c` 的 `bad_version` 返回改成 1（`pr_warn_once` 放行）。这是测试内核的妥协，不是安全加固；后续应改成按符号的 stock CRC 白名单，或用 `__GENKSYMS__` 隐藏新字段。
+
+已知限制：旧的 `tcp_bbr.ko`（BBRv1）不能在这个内核上加载；ECN/PLB 被裁掉；当前是 2025-03 版 BBRv3，2026-09 版（DRAIN gain、undo state、`cwnd_event_tx_start`）尚未移植。
+
+### A.5 6.1.176 的 valid-clones 根因
+
+6.1.176 纯 ACK 能开机：`boot_completed=1`，501 个模块，`Failed to insmod=0`，声卡正常，KSU root 正常。但屏幕持续闪屏。
+
+日志：
+
+```
+SDM: DRMAtomicReq::Commit: drmModeAtomicCommit failed with error 22 (Invalid argument). crtc=203
+SDM: DisplayBase::PerformCommit: COMMIT failed: 11
+HwcComposer: presentOrValidateDisplay 0 presentFence:-1
+```
+
+打开 DRM debug 后拿到直接证据：
+
+```
+[drm:drm_atomic_helper_check_modeset] crtc203 failed valid clone check for mask 0x6
+```
+
+kretprobe 定位：
+
+```
+katomic_check: (drm_atomic_nonblocking_commit+0x1c/0x90 <- drm_atomic_check_only) arg1=0xffffffea
+kioctl:        (drm_ioctl_kernel+0xf8/0x184 <- drm_mode_atomic_ioctl)          arg1=0xffffffea
+```
+
+`0xffffffea` = `-22` = `-EINVAL`，失败发生在 `drm_atomic_check_only()` 内部。
+
+根因：
+
+- stable **6.1.141** 引入上游 `41b4b11da02157c7474caf41d56baae0e941d01a`（`drm: Add valid clones check`）；
+- `drm_atomic_check_valid_clones()` 要求同一 CRTC 上所有 encoder 的 `possible_clones` 互相覆盖；
+- zorn 的 vendor `msm_drm.ko`（6.1.68 编）在 CRTC 203 上同时挂 DSI 和 Virtual encoder（`encoder_mask=0x6`），它们的 `possible_clones` 不互反；
+- 于是每次带这两个 encoder 的 modeset 都返回 `-EINVAL`，HWC 每帧重试，屏幕闪。
+
+版本边界：逐个读 stable 6.1.138–6.1.176 的 `drivers/gpu/drm/drm_atomic_helper.c`，**6.1.138/139/140 没有这个函数，6.1.141 起才有**。所以 6.1.145（Shirk）和 6.1.176（Droidspaces/纯 ACK）的闪屏是同一个原因，不是“6.1.138 是显示上限”。
+
+修复：删除 `drm_atomic_check_valid_clones()` 及其调用，等价恢复 6.1.140 行为。Image `841b819e...`，boot `d34718c8...`；刷入后 `COMMIT failed` / `drmModeAtomicCommit failed` 从每帧一条降到 0，`presentFence:-1` 仍有 163 条，但 6.1.138 正常基线也有类似突发（§18.5 记录 241 条，视觉正常），单独不作为判据。
+
+### A.6 双 BBR 的实现与验证
+
+在 6.1.176 + valid-clones revert 基线上：
+
+- BBRv1：保留 stock `net/ipv4/tcp_bbr.c`，注册名 `bbr`；
+- BBRv3：新增 `net/ipv4/tcp_bbr3.c`（由 6.1.138 上已适配的 v3 算法复制），注册名 `bbr3`；
+- core patch `0001-tcp-core-bbrv3.patch` 应用到 6.1.176，全部 hunk 成功，0 reject；只有 stable 偏移和 1 个 fuzz 1；
+- fuzz 1 位于 `tcp_process_tlp_ack(sk, ack, flag, &rs)`：6.1.176 在附近多了 `tcp_in_ack_event(sk, flag)`，最终代码正确；
+- BBRv1 需要适配新的 `tso_segs(sk, mss_now)` 回调：新增 `bbr_tso_segs()`，复刻 `tcp_tso_autosize()`，保留 BBRv1 按 pacing rate 取 1/2 的最小值，并把 ops 成员从 `.min_tso_segs` 改成 `.tso_segs`；
+- Kconfig/Makefile 增加 `TCP_CONG_BBR3`、`DEFAULT_BBR3`、`default "bbr3" if DEFAULT_BBR3`、`obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o`；
+- config：`TCP_CONG_BBR=y`、`TCP_CONG_BBR3=y`、`DEFAULT_BBR3=y`、`DEFAULT_TCP_CONG="bbr3"`、`NET_SCH_DEFAULT=y`、`DEFAULT_FQ=y`、`DEFAULT_NET_SCH="fq"`；
+- 旧的 `tcp_bbr_kmod` 保持禁用；`bbr3_fq` KSU 模块继续在 post-fs-data/service 阶段兜底 bbr3 + fq，并给 `rmnet_data*` / `wlan*` 挂 fq。
+
+真机结果：
+
+| 项 | 结果 |
+|---|---|
+| `uname -r` | `6.1.176-android14-11+` |
+| `tcp_available_congestion_control` | `reno bbr bbr3 cubic` |
+| 默认 CC / qdisc | `bbr3` / `fq` |
+| 切 `bbr` / 切回 `bbr3` | 均成功 |
+| 模块数 / `Failed to insmod` | 501 / 0 |
+| CRC tolerance 日志 | 1 条（`tolerating symbol version mismatch`，与 6.1.138 基线一致） |
+| 声卡 / root / 显示 | 正常 / KSU LKM / `COMMIT failed=0` |
+| 实际流量 | `curl https://www.baidu.com` 在 `bbr3` 和 `bbr` 下均返回 HTTP 200；`ss -tin` 分别显示 `bbr3` / `bbr` |
+
+### A.7 ThinLTO 构建与首轮验证
+
+stock zorn 内核用 ThinLTO；这版把同一 6.1.176 + 双 BBR + 显示修复的树用 ThinLTO 重编，验证能否替代 LTO_NONE。
+
+配置与工具链：
+
+- `CONFIG_LTO_CLANG_THIN=y`、`# CONFIG_LTO_NONE is not set`、`CONFIG_LTO_CLANG_FULL` 关闭；
+- `CONFIG_CFI_CLANG=y`、`CONFIG_MODVERSIONS=y`、`CONFIG_MODULE_SIG_PROTECT=n`；
+- 默认 `bbr3` + `fq`；
+- Ubuntu clang 17.0.6（ACK 官方 pin 是 AOSP `r487747c` / 17.0.2）；
+- `make -j8 Image`，输出 `/root/gki176-thinlto`。
+
+构建数据：
+
+| 项 | 结果 |
+|---|---|
+| wall time | 24:44.91 |
+| user / sys | 9358.30 s / 1004.97 s |
+| CPU | 697% |
+| `time -v` max RSS | 6,124,300 KiB（约 5.84 GiB） |
+| cgroup `memory.peak` | 6,381,436,928 B（约 5.94 GiB） |
+| `memory.swap.peak` | 1,368,064 B（约 1.3 MiB） |
+| `memory.events` | `oom=0`、`oom_kill=0` |
+| Image | 36,760,064 B，SHA256 `59fdfaab...` |
+
+对比 LTO_NONE：Image 35,645,952 B → 36,760,064 B，增加约 3.1%。LTO_NONE 那次没有精确的 `time`/峰值记录，不能直接比构建耗时。
+
+ABI：`/root/gki176-noprot/vmlinux.symvers` 与 `/root/gki176-thinlto/vmlinux.symvers` 全量 diff（去注释、排序）为 **0 行**；`module_layout=0xea759d7f`、`skb_put=0x385a34f9`、`__alloc_skb=0x3a1c9278` 两边一致。ThinLTO 只改代码生成，不改 genksyms 的符号 CRC。
+
+真机：
+
+| 项 | 结果 |
+|---|---|
+| `uname -r` | `6.1.176-android14-11+` |
+| `/proc/config.gz` | `CONFIG_LTO_CLANG_THIN=y`、`CONFIG_CFI_CLANG=y` |
+| `sys.boot_completed` | 1 |
+| 模块 / `Failed to insmod` | 501 / 0 |
+| CC / qdisc | `bbr3` / `fq` |
+| 声卡 / root / 显示 | 正常 / KSU LKM / `COMMIT failed=0` |
+
+开机进度（单次样本）：
+
+| 指标 | LTO_NONE | ThinLTO |
+|---|---:|---:|
+| `boot_progress_enable_screen` | 16022 ms | 15871 ms |
+| `sf_stop_bootanim` | 17730 ms | 17447 ms |
+
+分别约 -0.9% 和 -1.6%，只有单次样本，后台任务也不同，不能据此认为有稳定收益。CPU/存储/UI 的 A/B 尚未做。
+
+### A.8 产物与哈希
+
+| 产物 | SHA256 |
+|---|---|
+| 6.1.176 LTO_NONE Image | `263d14815f0d9f58a2e37dff0b8d67a58baa5ca8046f61f1eeb4b7532bb0c47f` |
+| 6.1.176 LTO_NONE boot | `827f8865666e709059230b76c640a1cc35cdea10d49f7253faf9935499440475` |
+| 6.1.176 ThinLTO Image | `59fdfaabfb4bb94239a3b2d1b851be3bcb6bc75a105d83d8296528c34514d559` |
+| 6.1.176 ThinLTO boot | `6637585575048818a2276dd68796ed09094536e013bf2ebcc122517d8221a02b` |
+| 6.1.176 显示修复 boot | `d34718c8fdade3deb08d94319024f451847703a34c1878ca155fd3015bcd609e` |
+| 6.1.138 BBRv3 Image | `43b72d3d06717e1df376abf1331d1ca784323914b4e53b5d49c41643ff9e5934` |
+| 6.1.138 BBRv3 boot | `8e6bacabedc9e347cc41a68a77dc9b630bbd6b6dffcb000adc8aa82784e28354` |
+| stock boot_a | `a1a041eb90226266244844c45adf650f665e930f622cc1db56afb95aba38affd` |
+
+GitHub release：<https://github.com/iliyian/k80-zorn-bbr/releases/tag/v0.2.0-6.1.176>
+
+### A.9 未完成与风险
+
+- `check_version()` 目前是**全局**放宽 CRC；后续应改成按符号的 stock CRC 白名单，或用 `__GENKSYMS__` 隐藏新字段。
+- `CONFIG_MODULE_SIG_PROTECT=n` 是为 stock vendor 模块加载做的取舍；`MODULE_SIG_FORCE` 本来就没开，`MODULE_SIG_PROTECT` 是 Android 额外那道门。
+- valid-clones 回退删掉的是 DRM 校验，不是显示功能；它恢复 6.1.140 行为，但严格说减少了上游想加的一层检查。
+- BBRv3 裁掉了 ECN/PLB；2026-09 版尚未移植。
+- 6.1.176 上 WiFi、相机、指纹、实际放音还没有逐项回归；长稳、发热、弱网/丢包场景也没有跑。
+- ThinLTO 的性能 A/B 还没完成；PGO/AutoFDO 在 6.1 ACK 上没有现成支持，需要额外 patchset 和 profile 采集。
+- 旧的 `tcp_bbr.ko` 不能在新内核加载；仓库里的预编译 `.ko` 仍只针对 6.1.138。
