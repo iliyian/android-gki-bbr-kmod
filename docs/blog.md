@@ -620,7 +620,7 @@ CONFIG_DEFAULT_NET_SCH="fq"
 
 - BBRv3 改 `struct rate_sample` / `tcp_skb_cb` / `tcp_congestion_ops` 后，genksyms 会给约 691 个导出符号生成新 CRC，stock vendor 模块的 `__versions` 对不上。当前测试内核在 `check_version()` 里放行不匹配；这是**全局放宽**，后续应该收紧成按符号的 stock CRC 白名单，或用 `__GENKSYMS__` 把新字段对 genksyms 隐藏。
 - ThinLTO 已完成构建和首轮真机验证：`-j8` 24:44.91，cgroup 峰值 6.38 GB，`vmlinux.symvers` 与 LTO_NONE 全量一致；开机/显示/audio/模块/BBR 正常，单次开机快约 1%，性能 A/B 待补。详见附录 A.7。
-- 细节、patch 和构建配置见 [`gki176/README.md`](../gki176/README.md) 和 [`BBRV3_PHONE_JOURNAL.md`](../bbrv3/docs/BBRV3_PHONE_JOURNAL.md) 第 20–21 节。
+- 细节、patch 和构建配置见 [`gki176/README.md`](../gki176/README.md) 和 [`BBRV3_PHONE_JOURNAL.md`](../bbrv3/docs/BBRV3_PHONE_JOURNAL.md) 第 20–22 节。
 
 ---
 
