@@ -6,6 +6,10 @@
 > 音频/显示正常。详见 [`bbrv3/README.md`](bbrv3/README.md) 和
 > [`bbrv3/docs/BBRV3_PHONE_JOURNAL.md`](bbrv3/docs/BBRV3_PHONE_JOURNAL.md)。
 >
+> **2026-11-05：ACK 6.1.176 + 双 BBR 已验证**（`bbr` + `bbr3`，默认 `bbr3` + `fq`）。
+> 同时定位并回退了 stable 6.1.141 引入的 DRM valid-clones 检查，解决 zorn 在 6.1.145+
+> 的闪屏。详见 [`gki176/README.md`](gki176/README.md)。
+>
 > 下面仍然保留 BBRv1 模块方案（不刷内核、不需要 vendor 源码）的完整说明。
 
 在 **不更换内核、不刷 GKI、不需要厂商内核源码** 的前提下，给 Android GKI 设备加载自编译的 `tcp_bbr.ko`，启用 BBR 拥塞控制，并配合 `fq` qdisc。

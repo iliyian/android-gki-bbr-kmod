@@ -1,0 +1,89 @@
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+index 2dfb12230..2a1f81cc4 100644
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -678,6 +678,15 @@ config TCP_CONG_BBR
+ 	  AQM schemes that do not provide a delay signal. It requires the fq
+ 	  ("Fair Queue") pacing packet scheduler.
+ 
++config TCP_CONG_BBR3
++	tristate "BBRv3 TCP"
++	default n
++	help
++	  BBRv3 (Bottleneck Bandwidth and RTT, version 3) congestion control.
++	  Based on Google's BBRv3 implementation; registers as "bbr3" and can
++	  coexist with the original BBR ("bbr"). It requires the fq scheduler
++	  for pacing.
++
+ choice
+ 	prompt "Default TCP congestion control"
+ 	default DEFAULT_CUBIC
+@@ -715,6 +724,9 @@ choice
+ 	config DEFAULT_BBR
+ 		bool "BBR" if TCP_CONG_BBR=y
+ 
++	config DEFAULT_BBR3
++		bool "BBR3" if TCP_CONG_BBR3=y
++
+ 	config DEFAULT_RENO
+ 		bool "Reno"
+ endchoice
+@@ -739,6 +751,7 @@ config DEFAULT_TCP_CONG
+ 	default "dctcp" if DEFAULT_DCTCP
+ 	default "cdg" if DEFAULT_CDG
+ 	default "bbr" if DEFAULT_BBR
++	default "bbr3" if DEFAULT_BBR3
+ 	default "cubic"
+ 
+ config TCP_MD5SIG
+diff --git a/net/ipv4/Makefile b/net/ipv4/Makefile
+index d1c8d4beb..50f2b97be 100644
+--- a/net/ipv4/Makefile
++++ b/net/ipv4/Makefile
+@@ -47,6 +47,7 @@ obj-$(CONFIG_INET_TCP_DIAG) += tcp_diag.o
+ obj-$(CONFIG_INET_UDP_DIAG) += udp_diag.o
+ obj-$(CONFIG_INET_RAW_DIAG) += raw_diag.o
+ obj-$(CONFIG_TCP_CONG_BBR) += tcp_bbr.o
++obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o
+ obj-$(CONFIG_TCP_CONG_BIC) += tcp_bic.o
+ obj-$(CONFIG_TCP_CONG_CDG) += tcp_cdg.o
+ obj-$(CONFIG_TCP_CONG_CUBIC) += tcp_cubic.o
+diff --git a/net/ipv4/tcp_bbr.c b/net/ipv4/tcp_bbr.c
+index 54eec33c6..c18631adc 100644
+--- a/net/ipv4/tcp_bbr.c
++++ b/net/ipv4/tcp_bbr.c
+@@ -300,6 +300,25 @@ static u32 bbr_min_tso_segs(struct sock *sk)
+ 	return sk->sk_pacing_rate < (bbr_min_tso_rate >> 3) ? 1 : 2;
+ }
+ 
++/* New tso_segs() callback: same autosizing as tcp_tso_autosize(), but
++ * preserving BBRv1's pacing-rate-dependent minimum.
++ */
++static u32 bbr_tso_segs(struct sock *sk, unsigned int mss_now)
++{
++	unsigned long bytes;
++	u32 r;
++
++	bytes = sk->sk_pacing_rate >> READ_ONCE(sk->sk_pacing_shift);
++
++	r = tcp_min_rtt(tcp_sk(sk)) >> READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_tso_rtt_log);
++	if (r < BITS_PER_TYPE(sk->sk_gso_max_size))
++		bytes += sk->sk_gso_max_size >> r;
++
++	bytes = min_t(unsigned long, bytes, sk->sk_gso_max_size);
++
++	return max_t(u32, bytes / mss_now, bbr_min_tso_segs(sk));
++}
++
+ static u32 bbr_tso_segs_goal(struct sock *sk)
+ {
+ 	struct tcp_sock *tp = tcp_sk(sk);
+@@ -1149,7 +1168,7 @@ static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
+ 	.undo_cwnd	= bbr_undo_cwnd,
+ 	.cwnd_event	= bbr_cwnd_event,
+ 	.ssthresh	= bbr_ssthresh,
+-	.min_tso_segs	= bbr_min_tso_segs,
++	.tso_segs	= bbr_tso_segs,
+ 	.get_info	= bbr_get_info,
+ 	.set_state	= bbr_set_state,
+ };

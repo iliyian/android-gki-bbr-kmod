@@ -19,8 +19,10 @@
 6. **当前正在 `ma` 上编 ACK 6.1.138 + 设备 `/proc/config.gz`**，重点补上 stock 有而 Google GKI `gki_defconfig` 没有的 `SND_SOC_COMPRESS`、`SND_SOC_TOPOLOGY` 等 audio 配置，验证 audio 卡住是不是 config 问题。
 7. 如果 ACK device-config 仍卡 audio，则转 **Allay-OS 6.1.138 vendor 树**（zorn 特化）或等小米 6.1.138-mi 源码。
 8. **2026-11-04 追加**：ShirkNeko 6.1.124 GKI 实测可开机，显示/audio/WiFi/相机/指纹/root 均正常；6.1.145 可开机、audio 正常但显示持续闪屏；Shirk 6.1.138 构建编译成功但卡 Redmi logo，pstore 无日志，疑似 SUSFS `fs/namespace.c` patch 不完整。详见第 14 节。
-9. **2026-11-04 最终基线**：ACK/Google GKI **6.1.138** + `CONFIG_MODULE_SIG_PROTECT=n`、LTO_NONE、gki_defconfig，`fastboot boot` 实测显示/audio/相机/指纹/WiFi/5G/KSU root/BBR 全部正常，`boot_completed=1`。**audio 卡死根因确认为 GKI module protection**；6.1.138 是 zorn 的显示兼容上限。详见第 18 节。
+9. **2026-11-04 最终基线**：ACK/Google GKI **6.1.138** + `CONFIG_MODULE_SIG_PROTECT=n`、LTO_NONE、gki_defconfig，`fastboot boot` 实测显示/audio/相机/指纹/WiFi/5G/KSU root/BBR 全部正常，`boot_completed=1`。**audio 卡死根因确认为 GKI module protection**。~~6.1.138 是 zorn 的显示兼容上限~~ —— 该结论当时没有中间版本证据，已被 2026-11-05 的实验推翻；真正边界是 stable 6.1.140/6.1.141，详见第 20 节。
 10. **2026-11-04 BBRv3 移植成功**：以 Google `google/bbr` v3（6.13.7）为唯一参考，自研回移到 ACK 6.1.138；`bbr3` 注册成功、可切换，开机/音频/模块加载正常。核心障碍不是算法，而是 genksyms CRC 误伤导致 vendor 模块拒绝加载；已用 `check_version()` 放行解决。详见第 19 节。
+11. **2026-11-05 6.1.176 显示闪屏根因定位**：纯 ACK 6.1.176 能开机，模块/audio/root 正常，但显示持续闪屏。根因是 stable **6.1.141** 引入的 `drm_atomic_check_valid_clones()`（上游 `41b4b11da0215`）与 zorn vendor `msm_drm.ko`（6.1.68 编）的 DSI+Virtual encoder `possible_clones` 不兼容：`drm_atomic_check_only()` 对 CRTC 203 返回 `-EINVAL`，HWC 每帧重试失败。回退该检查后 6.1.176 显示恢复正常，用户确认视觉正常。详见第 20 节。
+12. **2026-11-05 6.1.176 双 BBR + 默认 bbr3/fq**：在同一 6.1.176 基线上同时编入 BBRv1（`bbr`）和 BBRv3（`bbr3`），默认 `CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`。真机验证 `tcp_available=reno bbr bbr3 cubic`、默认 `bbr3`、`default_qdisc=fq`；`bbr`/`bbr3` 均可切换并实际跑通 HTTP；模块/audio/root/显示正常。详见第 21 节。
 
 ---
 
@@ -555,6 +557,14 @@ CONFIG_LOCALVERSION=""
   - `--ksu-version Stable/Dev` 在 `add_kernelsu()` 里**没有被使用**；不指定 `kernelsu_commit` 时永远拉 `SukiSU-Ultra/SukiSU-Ultra` 的 `main` 分支 `kernel/setup.sh`。
   - 要固定内核侧 KSU，必须用 `--ksu-commit` / `kernelsu_commit`；管理器 APK 是独立组件，可另外升级到 41140。
 
+### 14.9 附：安全中心 fraud_detection_data.db（与 BBRv3 无关）
+
+- 文件：`/data/misc/user/0/securitycenter/fraud_detection_data.db`，49KB SQLite；已拉取到 `dl/securitycenter/fraud_detection_data.db` 备份。
+- 表：`screenshot`（22 条时间戳，无图片）、`install_app`（15 条安装记录：包名/来源/版本/时间/内部标签，部分有 MD5）、`call_forwarding`（1 条关闭事件）、`fraud_phone`/`fraud_url`/`voip_record`/`screen_share`/`airplane_mode`（均为空）。
+- 处理：已 force-stop 安全中心，将 DB truncate 为 0 字节，`chmod 000` + `chattr +i`；PC 有备份。安全中心进程仍能运行，暂未观察到持续报错。
+- 同目录 `cta` 是明文 JSON 权限审计（12 个系统应用 + 敏感权限 + 时间戳）；`fire_wall_*.db` 不是 SQLite，是混淆/加密的默认防火墙规则，三份 122 字节文件 MD5 相同（`b453e5d6...`），roaming 为 10 字节；未逆出具体规则。
+- 这部分是本次 session 的旁支调查，记录在此仅供完整性；不涉及内核/BBRv3。
+
 ### 14.10 当前手机状态与下一步
 
 - 当前：stock `6.1.138-android14-11-g965475777129-mi`，`boot_completed=1`；adb root（LKM），`kernelsu`/`tcp_bbr` 已加载，BBR 当前生效；模块和 SUSFS 保持原样。
@@ -575,6 +585,7 @@ CONFIG_LOCALVERSION=""
 - `dl/shirk145/`：6.1.145 boot/repacked。
 - `dl/gki-google/`：Google GKI 2025-02（6.1.124）、2025-05（6.1.134）boot/Image、内嵌 config、repacked。
 - `dl/gki138-build/`：Shirk 6.1.138 artifact、`Image-6.1.138`、`gki138new-repacked.img`。
+- `dl/securitycenter/`：fraud DB 备份、`db_dump_utf8.txt`、firewall/cta 副本。
 - `fork-gki/`：`iliyian/GKI_KernelSU_SUSFS` 本地 clone；构建修复 commit `47a0ba2`。
 - GitHub Actions：
   - `41700802010`（6.1.138 最终成功构建）
@@ -876,7 +887,7 @@ make ARCH=arm64 LLVM=1 O=/root/gki138-noprot -j10 Image
    - 保持 `CONFIG_MODULE_SIG_PROTECT=n` 和本节的 gki_defconfig 基线。
 2. 关掉旧的 `tcp_bbr.ko` KSU 模块（避免与内核内置 bbr 重复）。
 3. 构建/测试流程复用：`make Image` → `magiskboot` 换 kernel → `fastboot boot` 零写入。
-4. 可选：等 BBRv3 稳定后，再花一次构建验证 6.1.145 + protection off 的显示边界；预期仍闪屏，6.1.138 是 zorn 的显示兼容上限。
+4. 可选：等 BBRv3 稳定后，再花一次构建验证 6.1.145 + protection off 的显示边界；预期仍闪屏，6.1.138 是 zorn 的显示兼容上限。（**2026-11-05 更正**：该预期错误；真正边界是 stable 6.1.140/6.1.141 引入的 valid clones check，回退后 6.1.176 显示正常，见第 20 节。）
 
 ### 18.7 新增产物
 
@@ -1039,3 +1050,203 @@ dmesg | grep "pineapple-mtp-snd-card"     # 6.529s 声卡注册
 2. 验证音频实际放音、相机/指纹/WiFi 回归；
 3. 视需要把算法换成 2026-09 `tcp_bbr3.c`（需要适配 `cwnd_event_tx_start` 等 7.1 API）；
 4. 自定义注册名：`.name` 是普通字符串，`TCP_CA_NAME_MAX=16`，改成 `iliyian` 只需改一行并重编；若要把 BBRv1 也保留，可加入 `tcp_bbr1.c` 并以 `bbr` 注册。
+
+---
+
+## 20. 2026-11-05：6.1.176 显示闪屏根因与修复（stable 6.1.141 valid clones check）
+
+### 20.1 结论
+
+**6.1.138 不是 zorn 的显示兼容上限。** 纯 ACK 6.1.176 的闪屏是一个具体的、可回退的 stable 补丁导致的：
+
+- stable **6.1.141** 引入上游提交 **`41b4b11da02157c7474caf41d56baae0e941d01a`**（"drm: Add valid clones check"，2024-12-17，Jessica Zhang）。
+- 该提交在 `drm_atomic_helper_check_modeset()` 中新增 `drm_atomic_check_valid_clones()`：要求同一个 CRTC 上所有 encoder 的 `possible_clones` 互相覆盖。
+- zorn 的 `msm_drm.ko`（vendor 模块，vermagic 6.1.68）在 **CRTC 203** 上同时挂 DSI 和 Virtual 两个 encoder（`encoder_mask=0x6`），其 `possible_clones` 不满足这个新检查。
+- 结果：`drm_atomic_nonblocking_commit()` → `drm_atomic_check_only()` → `drm_atomic_helper_check_modeset()` 返回 `-EINVAL`，HWC 每帧重试失败，屏幕持续闪屏。
+- 回退这一处检查后，6.1.176 显示恢复正常，用户确认视觉正常；atomic commit 失败日志从每帧一条降到 0。
+
+版本边界：**6.1.138 / 139 / 140 没有该检查；6.1.141 及以后有**。
+
+### 20.2 实验对象
+
+- 源码：ACK `android14-6.1-2026-09`，HEAD `8bc4db3e2`，版本 `6.1.176`。
+- 构建：`gki_defconfig`，`CONFIG_MODULE_SIG_PROTECT=n`，`CONFIG_LTO_NONE=y`，`CONFIG_MODVERSIONS=y`，`CONFIG_LOCALVERSION="-android14-11"`，Ubuntu clang 17.0.6。
+- 工具链兼容：clang 17 编 6.1.176 的 `tools/bpf/resolve_btfids/libbpf` 时，`libbpf.c:10756` 的 `next_path = strchr(s, ':')` 触发 `-Wincompatible-pointer-types-discards-qualifiers`；加 `(char *)` cast 后通过。仅影响 host 工具。
+- 刷写方式：`fastboot flash boot_a`（该 bootloader 忽略 `fastboot boot`）。
+- 本构建**不带 BBRv3**，`tcp_available_congestion_control=reno cubic`。
+
+### 20.3 现象与日志证据
+
+6.1.176 原版镜像（`Image` SHA256 `0ff0f50b...`，boot `444064ff...`）：
+
+- `sys.boot_completed=1`，501 个模块，`Failed to insmod=0`，声卡 `pineapple-mtp-snd-card` 正常注册，KSU LKM root 正常。
+- 显示持续闪屏。logcat 里每帧重复：
+
+```
+SDM: DRMAtomicReq::Commit: drmModeAtomicCommit failed with error 22 (Invalid argument). crtc=203
+SDM: HWDeviceDRM::AtomicCommit: AtomicCommit failed with error -22 crtc 203
+SDM: DisplayBase::PerformCommit: COMMIT failed: 11
+HwcComposer: presentOrValidateDisplay 0 presentFence:-1
+```
+
+- 打开 DRM debug（`echo 0x1f > /sys/module/drm/parameters/debug`）后拿到直接证据：
+
+```
+[drm:drm_atomic_helper_check_modeset] crtc203 failed valid clone check for mask 0x6
+```
+
+- kretprobe 定位（`/sys/kernel/tracing/kprobe_events`）：
+
+```
+katomic_check: (drm_atomic_nonblocking_commit+0x1c/0x90 <- drm_atomic_check_only) arg1=0xffffffea
+kioctl:        (drm_ioctl_kernel+0xf8/0x184 <- drm_mode_atomic_ioctl)          arg1=0xffffffea
+```
+
+`0xffffffea` = `-22` = `-EINVAL`，说明失败发生在 `drm_atomic_check_only()` 内部，而不是 commit 后续阶段。
+
+### 20.4 版本边界验证
+
+对 stable 6.1.138–6.1.176 逐个读取 `drivers/gpu/drm/drm_atomic_helper.c`，检查是否包含 `drm_atomic_check_valid_clones`：
+
+| 版本 | 是否包含 |
+|---|---|
+| 6.1.138 / 139 / 140 | 否 |
+| 6.1.141 – 6.1.176 | 是 |
+
+因此 6.1.145（Shirk）和 6.1.176（Droidspaces、本次纯 ACK）的闪屏是同一个原因；此前把它们归因为“6.1.138 显示上限”是错误结论。
+
+### 20.5 修复
+
+在 6.1.176 上精确回退 `drm_atomic_check_valid_clones()` 及其调用，等价恢复 6.1.140 行为：
+
+- 删除 `drivers/gpu/drm/drm_atomic_helper.c` 中的 `static int drm_atomic_check_valid_clones(...)` 函数；
+- 删除 `drm_atomic_helper_check_modeset()` 中对应的调用：
+
+```c
+ret = drm_atomic_check_valid_clones(state, crtc);
+if (ret != 0)
+    return ret;
+```
+
+补丁：`/root/gki176-patches/0001-revert-valid-clones-check.patch`（本地副本 `gki176-patches/0001-revert-valid-clones-check.patch`）。
+
+重新编译只重编 `drm_atomic_helper.o` 并重链，Image SHA256 `841b819e...`，boot `d34718c8...`。
+
+### 20.6 修复后验证
+
+| 项 | 结果 |
+|---|---|
+| `uname -r` | `6.1.176-android14-11+` |
+| `sys.boot_completed` | 1 |
+| 模块数 | 501 |
+| `Failed to insmod` | 0 |
+| `valid clone check` dmesg | 0 |
+| `drmModeAtomicCommit failed` | 0（清 logcat 后唤醒/滑动复测） |
+| `COMMIT failed` | 0 |
+| `presentFence:-1` | 163 条，但 6.1.138 正常基线也有类似突发（§18.5 记录 241 条，视觉正常），单独不作为闪屏判据 |
+| 声卡 | `pineapple-mtp-snd-card`，`/dev/snd` 正常 |
+| root | KSU LKM，`u:r:ksu:s0` |
+| 视觉 | 用户确认正常 |
+| WiFi / 相机 / 指纹 | 本轮未逐一复测（WiFi 当时关闭）；留待回归 |
+
+### 20.7 风险与后续
+
+- 回退的是 DRM core 的**校验**，不是显示功能；该检查用于发现 encoder clone mask 不合法，zorn 的 vendor `msm_drm.ko` 因为 DSI + Virtual encoder 共享 CRTC 而天然满足不了它。对这条 vendor 栈来说是新检查的 false positive。
+- 回退后等价于 6.1.140 行为；6.1.138–140 本来就没有这个检查。风险是如果将来有驱动真的依赖该检查阻止非法 clone，可能重新暴露上游原本想修的问题；对本机 vendor HWC 场景未观察到。
+- 下一步：
+  1. 在 6.1.176 + revert 基线上移植 BBRv3（现有 6.1.138 patchset 需重新适配/验证 CRC）；
+  2. 复测 WiFi、相机、指纹、实际放音；
+  3. 长稳和吞吐测试；
+  4. 如果只想避开该 bug 且不追新，6.1.140 是最后一个无需 patch 的 6.1 版本（未实测，按代码边界推断）。
+
+### 20.8 产物与路径
+
+**服务器**：
+
+- `/root/ack176-shallow`：ACK 6.1.176 worktree（含 revert + libbpf cast）
+- `/root/gki176-noprot/`：构建目录；原版 Image `0ff0f50b...`，revert 版 Image `841b819e...`
+- `/root/gki176-patches/0001-revert-valid-clones-check.patch`
+- `/root/gki176-clonefix-boot.img`（SHA256 `d34718c8...`）
+
+**本地**：
+
+- `dl/gki176-noprot-boot.img`（原版，`444064ff...`）
+- `dl/gki176-clonefix-boot.img`（修复版，`d34718c8...`）
+- `gki176-patches/0001-revert-valid-clones-check.patch`
+- `logs/gki176/dmesg.txt`、`logcat.txt`（原版失败日志）、`clonefix-logcat.txt`（修复后日志）
+- `dl/msm_drm.ko`（从手机拉取的 vendor 显示模块，6.1.68 vermagic）
+
+---
+
+## 21. 2026-11-05：6.1.176 双 BBR（bbr + bbr3）+ 默认 bbr3 / fq
+
+### 21.1 结论
+
+在 6.1.176 + valid-clones revert 基线上，**BBRv1 和 BBRv3 同时编入内核**：
+
+- BBRv1：保留 stock `net/ipv4/tcp_bbr.c`，注册名 `bbr`；
+- BBRv3：新增 `net/ipv4/tcp_bbr3.c`（由 6.1.138 上已适配的 v3 算法复制而来），注册名 `bbr3`；
+- 默认拥塞控制：`CONFIG_DEFAULT_TCP_CONG="bbr3"`；
+- 默认 qdisc：`CONFIG_DEFAULT_NET_SCH="fq"`（打开 `NET_SCH_DEFAULT` + `DEFAULT_FQ`）；
+- 真机验证：`tcp_available_congestion_control = reno bbr bbr3 cubic`，当前 `bbr3`，`default_qdisc = fq`；两个算法都能切换并实际建立 HTTP 连接。
+
+### 21.2 实现细节
+
+1. **core patch**：`/root/bbrv3-export/patches/0001-tcp-core-bbrv3.patch` 应用到 6.1.176，全部 hunk 成功，0 reject；只有 stable 偏移和 1 个 fuzz 1。
+   - fuzz 1 位于 `net/ipv4/tcp_input.c` 的 `tcp_process_tlp_ack(sk, ack, flag, &rs)`，6.1.176 在附近多了 `tcp_in_ack_event(sk, flag)`，最终代码正确。
+2. **BBRv3 算法**：把 6.1.138 分支的 `net/ipv4/tcp_bbr.c` 复制为 `net/ipv4/tcp_bbr3.c`，并把模块内静态符号重命名为 `bbr3_register` / `bbr3_unregister` / `tcp_bbr3_cong_ops`；`.name = "bbr3"` 不变。
+3. **BBRv1 适配**：core patch 把 `tcp_congestion_ops.min_tso_segs(sk)` 改成 `tso_segs(sk, mss_now)`，stock BBRv1 不兼容。已在 `tcp_bbr.c` 新增 `bbr_tso_segs()`（复刻 `tcp_tso_autosize()`，保留 BBRv1 按 pacing rate 取 1/2 的最小值），并把 ops 成员改为 `.tso_segs`。
+4. **Kconfig / Makefile**：
+   - 新增 `config TCP_CONG_BBR3`、`config DEFAULT_BBR3`、`default "bbr3" if DEFAULT_BBR3`；
+   - `obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o`。
+5. **config**：
+   - `CONFIG_TCP_CONG_BBR=y`、`CONFIG_TCP_CONG_BBR3=y`；
+   - `CONFIG_DEFAULT_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`；
+   - `CONFIG_NET_SCH_DEFAULT=y`、`CONFIG_DEFAULT_FQ=y`、`CONFIG_DEFAULT_NET_SCH="fq"`；
+   - 继续保留 `CONFIG_MODULE_SIG_PROTECT=n` 和 CRC 放行 patch（见第 19/20 节）。
+6. **旧模块**：`/data/adb/modules/tcp_bbr_kmod` 保持禁用；`bbr3_fq` KSU 模块继续在 post-fs-data/service 阶段兜底 `bbr3` + `fq`，并给 `rmnet_data*` / `wlan*` 挂 fq。
+
+### 21.3 真机验证
+
+| 项 | 结果 |
+|---|---|
+| `uname -r` | `6.1.176-android14-11+` |
+| `sys.boot_completed` | 1 |
+| `tcp_available_congestion_control` | `reno bbr bbr3 cubic` |
+| `tcp_congestion_control` | `bbr3`（默认） |
+| 切 `bbr` / 切回 `bbr3` | 均成功 |
+| `net.core.default_qdisc` | `fq` |
+| `rmnet_data0` qdisc | `fq` |
+| 模块数 / `Failed to insmod` | 501 / 0 |
+| CRC tolerance 日志 | 1 条（`tolerating symbol version mismatch`，与 6.1.138 基线一致） |
+| 声卡 | `pineapple-mtp-snd-card` 正常 |
+| root | KSU LKM，`u:r:ksu:s0` |
+| 显示 atomic 失败 | `COMMIT failed=0`、`drmModeAtomicCommit failed=0`（唤醒+滑动复测） |
+| 实际流量 | `curl https://www.baidu.com` 在 `bbr3` 和 `bbr` 下均返回 HTTP 200；`ss -tin` 分别显示 `bbr3` / `bbr` |
+| 视觉 | 沿用第 20 节的显示回退，日志层面无 atomic 失败；视觉待用户复核 |
+
+### 21.4 产物与路径
+
+**服务器**：
+
+- `/root/ack176-shallow`：6.1.176 源码树（valid-clones revert + BBRv3 core + dual BBR + libbpf cast）
+- `/root/gki176-noprot/`：构建目录；Image SHA256 `263d14815f0d9f58a2e37dff0b8d67a58baa5ca8046f61f1eeb4b7532bb0c47f`
+- `/root/gki176-bbr3-dual-boot.img`：SHA256 `827f8865666e709059230b76c640a1cc35cdea10d49f7253faf9935499440475`
+- `/root/gki176-bbr3-dual-build.log`（0 error）
+- `/root/bbrv3-export/patches/0001-tcp-core-bbrv3.patch`、`0003-module-tolerate-crc-mismatch.patch`
+- `/root/gki176-patches/0001-revert-valid-clones-check.patch`
+
+**本地**：
+
+- `dl/gki176-bbr3-dual-boot.img`（`827f8865...`）
+- `logs/gki176/dual-bbr-logcat.txt`
+- `gki176-patches/`（回退 patch；core/CRC patch 见服务器路径）
+
+### 21.5 风险与后续
+
+- 双 BBR 本身不改 `tcp_sock` 布局；`rate_sample` / `tcp_skb_cb` 的变化与第 19 节一致。
+- 模块 CRC 全局放行、`MODULE_SIG_PROTECT=n` 的安全取舍见第 19.9 / 20.7 节；不是后门，但属于有意的兼容性放宽。
+- 待办：
+  1. `bbr3` vs `bbr` vs `cubic` 的实际吞吐/延迟 A/B（`iperf3`、`ss -tin`、弱网/5G）；
+  2. 长稳、发热、WiFi/相机/指纹/实际放音回归；
+  3. 视需要移植 2026-09 版 `tcp_bbr3.c`（需要适配 `cwnd_event_tx_start` 等 7.1 API）。

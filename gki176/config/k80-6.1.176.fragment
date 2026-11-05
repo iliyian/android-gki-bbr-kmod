@@ -1,0 +1,24 @@
+# K80/zorn on ACK android14-6.1-2026-09 (6.1.176)
+# Base: arch/arm64/configs/gki_defconfig
+# Apply with: cat this >> out/.config && make olddefconfig
+
+# Custom GKI: stock vendor modules must load on 6.1.176
+# CONFIG_MODULE_SIG_PROTECT is not set
+
+# Match the stock zorn release string; keep MODVERSIONS for vendor modules
+CONFIG_LOCALVERSION="-android14-11"
+# CONFIG_LOCALVERSION_AUTO is not set
+CONFIG_MODVERSIONS=y
+CONFIG_DEBUG_INFO_BTF=y
+CONFIG_DEBUG_INFO_BTF_MODULES=y
+
+# BBRv1 + BBRv3, default bbr3 + fq
+CONFIG_TCP_CONG_ADVANCED=y
+CONFIG_TCP_CONG_BBR=y
+CONFIG_TCP_CONG_BBR3=y
+CONFIG_DEFAULT_BBR3=y
+CONFIG_DEFAULT_TCP_CONG="bbr3"
+CONFIG_NET_SCH_FQ=y
+CONFIG_NET_SCH_DEFAULT=y
+CONFIG_DEFAULT_FQ=y
+CONFIG_DEFAULT_NET_SCH="fq"
