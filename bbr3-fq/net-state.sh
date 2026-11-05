@@ -55,8 +55,10 @@ EOF
         [ -n "$rx" ] || rx=0
         [ -n "$tx" ] || tx=0
         qstat=$($TC -s qdisc show dev "$dev" 2>/dev/null)
-        read qdisc drops requeues backlog_b backlog_p <<EOF
+        read qdisc drops overlimits requeues backlog_b backlog_p <<EOF
 $(printf '%s\n' "$qstat" | $AWK '
+    /^qdisc / { block++ }
+    block > 1 { next }
     NR == 1 { q = $2 }
     /dropped/ && !have_d {
         if (match($0, /dropped [0-9]+/)) {
@@ -64,14 +66,20 @@ $(printf '%s\n' "$qstat" | $AWK '
             have_d = 1
         }
     }
+    /overlimits/ && !have_o {
+        if (match($0, /overlimits [0-9]+/)) {
+            o = substr($0, RSTART + 11, RLENGTH - 11)
+            have_o = 1
+        }
+    }
     /^ *backlog/ {
         b = $2
         p = $3
-        r = $4
+        r = $5
         sub(/b$/, "", b)
         sub(/p$/, "", p)
     }
-    END { print q, d + 0, r + 0, b + 0, p + 0 }
+    END { print q, d + 0, o + 0, r + 0, b + 0, p + 0 }
 ')
 EOF
     else
@@ -85,9 +93,9 @@ EOF
         backlog_p=0
     fi
 
-    printf '{"name":"%s","state":"%s","rx":%s,"tx":%s,"qdisc":"%s","drops":%s,"backlog_b":%s,"backlog_p":%s,"requeues":%s}' \
+    printf '{"name":"%s","state":"%s","rx":%s,"tx":%s,"qdisc":"%s","drops":%s,"overlimits":%s,"backlog_b":%s,"backlog_p":%s,"requeues":%s}' \
         "$dev" "$state" "$rx" "$tx" "$qdisc" \
-        "${drops:-0}" "${backlog_b:-0}" "${backlog_p:-0}" "${requeues:-0}"
+        "${drops:-0}" "${overlimits:-0}" "${backlog_b:-0}" "${backlog_p:-0}" "${requeues:-0}"
 }
 
 tcp_json() {

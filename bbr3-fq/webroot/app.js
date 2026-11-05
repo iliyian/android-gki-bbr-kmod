@@ -44,7 +44,6 @@
     netPrev: null,
     netRates: { down: 0, up: 0 },
     netRetransRate: null,
-    netDropsRate: 0,
     sparkDown: new Array(60).fill(0),
     sparkUp: new Array(60).fill(0),
     netRefreshing: false,
@@ -132,6 +131,8 @@
     els.tcpRetrans = $('tcpRetrans');
     els.qdiscDrops = $('qdiscDrops');
     els.qdiscBacklog = $('qdiscBacklog');
+    els.qdiscRequeues = $('qdiscRequeues');
+    els.qdiscOverlimits = $('qdiscOverlimits');
   }
 
   function bindEvents() {
@@ -600,13 +601,11 @@
         state.netRates.down = down;
         state.netRates.up = up;
         state.netRetransRate = outsegs > 0 ? (retrans / outsegs) * 100 : null;
-        state.netDropsRate = Math.max(0, (iface.drops || 0) - prev.drops) / dt;
         pushSpark(down, up);
       } else if (!same || interval > 5000) {
         state.netRates.down = 0;
         state.netRates.up = 0;
         state.netRetransRate = null;
-        state.netDropsRate = 0;
         pushSpark(0, 0);
       }
 
@@ -615,7 +614,6 @@
         dev: iface.name || '',
         rx: iface.rx || 0,
         tx: iface.tx || 0,
-        drops: iface.drops || 0,
         retrans: tcp.retrans || 0,
         outsegs: tcp.outsegs || 0,
       };
@@ -703,7 +701,11 @@
     if (dev && dev.indexOf('wlan') === 0 && wifi.rssi != null) {
       return 'RSSI ' + wifi.rssi + ' dBm';
     }
-    if (cell.rsrp != null) return 'RSRP ' + cell.rsrp + ' dBm';
+    if (cell.rsrp != null) {
+      return cell.sinr != null
+        ? 'RSRP ' + cell.rsrp + ' · SINR ' + cell.sinr
+        : 'RSRP ' + cell.rsrp + ' dBm';
+    }
     if (wifi.rssi != null) return 'RSSI ' + wifi.rssi + ' dBm';
     return '—';
   }
@@ -714,9 +716,9 @@
     const parts = [];
     if (cell.operator) parts.push(cell.operator);
     if (cell.tech) parts.push(cell.tech);
-    if (cell.rsrp != null) parts.push('RSRP ' + cell.rsrp);
-    if (cell.rsrq != null) parts.push('RSRQ ' + cell.rsrq);
-    if (cell.sinr != null) parts.push('SINR ' + cell.sinr);
+    if (cell.rsrp != null) parts.push('RSRP ' + cell.rsrp + ' dBm');
+    if (cell.rsrq != null) parts.push('RSRQ ' + cell.rsrq + ' dB');
+    if (cell.sinr != null) parts.push('SINR ' + cell.sinr + ' dB');
     if (wifi.ssid) parts.push('SSID ' + wifi.ssid);
     if (wifi.link != null) parts.push(wifi.link + ' Mbps');
     return parts.join(' · ');
@@ -788,8 +790,17 @@
     els.tcpRetrans.textContent = state.netRetransRate == null
       ? '—'
       : state.netRetransRate.toFixed(2) + '%';
-    els.qdiscDrops.textContent = String(Math.round(state.netDropsRate || 0));
-    els.qdiscBacklog.textContent = formatBytes(iface.backlog_b || 0);
+
+    const backlogBytes = iface.backlog_b || 0;
+    const backlogPackets = iface.backlog_p || 0;
+    els.qdiscDrops.textContent = String(iface.drops || 0);
+    els.qdiscDrops.title = '累计 dropped 计数';
+    els.qdiscBacklog.textContent = formatBytes(backlogBytes) + ' · ' + backlogPackets + 'p';
+    els.qdiscBacklog.title = '当前 backlog：' + backlogBytes + ' 字节 / ' + backlogPackets + ' 包';
+    els.qdiscRequeues.textContent = String(iface.requeues || 0);
+    els.qdiscRequeues.title = '累计 requeues';
+    els.qdiscOverlimits.textContent = String(iface.overlimits || 0);
+    els.qdiscOverlimits.title = '累计 overlimits';
 
     renderSpark();
   }
@@ -1198,7 +1209,7 @@
       route: { dev: 'rmnet_data3', src: '100.70.20.60', via: '100.70.20.61' },
       iface: {
         name: 'rmnet_data3', state: 'up', rx: 413217120, tx: 281639698,
-        qdisc: 'fq', drops: 0, backlog_b: 0, backlog_p: 0, requeues: 0,
+        qdisc: 'fq', drops: 0, overlimits: 0, backlog_b: 0, backlog_p: 0, requeues: 0,
       },
       tcp: { total: 71, estab: 57, timewait: 5, retrans: 12476, outsegs: 1650738 },
     };
@@ -1211,7 +1222,6 @@
     };
     state.netRates = { down: 12.4e6, up: 1.6e6 };
     state.netRetransRate = 0.03;
-    state.netDropsRate = 0;
     state.sparkDown = Array.from({ length: 60 }, function (_, i) {
       return 5 + Math.sin(i / 5) * 3 + (i % 7) * 0.25;
     });
